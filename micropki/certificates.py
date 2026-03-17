@@ -5,7 +5,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa, ec
 from cryptography.hazmat.backends import default_backend
 from datetime import datetime, timedelta, timezone
 import secrets
-from typing import Union
+from typing import Union, Optional, Tuple
 import logging
 
 logger = logging.getLogger(__name__)
@@ -80,6 +80,28 @@ def compute_ski(public_key: Union[rsa.RSAPublicKey, ec.EllipticCurvePublicKey]) 
 
     logger.debug(f"Computed SKI: {ski.hex()}")
     return ski
+
+
+def generate_key_pair_for_entity(key_type: str = 'rsa', key_size: int = 2048) -> Tuple[
+    Union[rsa.RSAPrivateKey, ec.EllipticCurvePrivateKey], str]:
+
+    try:
+        if key_type == 'rsa':
+            if key_size != 2048:
+                logger.warning(f"RSA key size for end-entity should be 2048, got {key_size}")
+            from micropki.crypto_utils import generate_rsa_key
+            private_key = generate_rsa_key(key_size)
+        else:
+            from micropki.crypto_utils import generate_ecc_key
+            private_key = generate_ecc_key()
+            key_type = 'ecc'
+
+        logger.info(f"Generated {key_type} key pair for end-entity")
+        return private_key, key_type
+
+    except Exception as e:
+        logger.error(f"Failed to generate key pair: {str(e)}")
+        raise CertificateError(f"Key generation failed: {str(e)}")
 
 
 def create_self_signed_ca_certificate(
@@ -191,3 +213,18 @@ def verify_certificate_self_signed(cert_path: str) -> bool:
     except Exception as e:
         logger.error(f"Certificate verification failed: {str(e)}")
         raise CertificateError(f"Verification failed: {str(e)}")
+
+
+def parse_san_string(san_string: str) -> Tuple[str, str]:
+
+    if ':' not in san_string:
+        raise CertificateError(f"Invalid SAN format: {san_string}")
+
+    san_type, san_value = san_string.split(':', 1)
+    san_type = san_type.lower()
+
+    valid_types = ['dns', 'ip', 'email', 'uri']
+    if san_type not in valid_types:
+        raise CertificateError(f"Unsupported SAN type: {san_type}. Must be one of {valid_types}")
+
+    return san_type, san_value
