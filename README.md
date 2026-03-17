@@ -6,7 +6,7 @@
 
 MicroPKI — это легковесный инструмент для создания и управления самоподписанным корневым удостоверяющим центром (Root Certificate Authority). Проект обеспечивает безопасную генерацию ключей, создание X.509 сертификатов и аудит логирования.
 
-## Возможности (Спринт 1)
+## Возможности
 
 - Генерация самоподписанных корневых сертификатов CA
 - Поддержка ключей RSA-4096 и ECC P-384
@@ -80,6 +80,77 @@ micropki ca init \
     --out-dir ./pki
 ```
 
+### Создание промежуточного CA
+
+```bash
+# Создание Intermediate CA, подписанного Root CA
+micropki ca issue-intermediate \
+    --root-cert ./pki/certs/ca.cert.pem \
+    --root-key ./pki/private/ca.key.pem \
+    --root-pass-file ./secrets/root.pass \
+    --subject "CN=My Intermediate CA,O=My Organization" \
+    --key-type rsa \
+    --key-size 4096 \
+    --passphrase-file ./secrets/intermediate.pass \
+    --out-dir ./pki \
+    --validity-days 1825
+```
+
+### Выпуск сертификатов по шаблонам
+
+**Серверный сертификат:**
+```bash
+micropki ca issue-cert \
+    --ca-cert ./pki/certs/intermediate.cert.pem \
+    --ca-key ./pki/private/intermediate.key.pem \
+    --ca-pass-file ./secrets/intermediate.pass \
+    --template server \
+    --subject "CN=example.com" \
+    --san dns:example.com \
+    --san dns:www.example.com \
+    --san ip:192.168.1.10 \
+    --out-dir ./pki/certs
+```
+
+**Клиентский сертификат:**
+```bash
+micropki ca issue-cert \
+    --ca-cert ./pki/certs/intermediate.cert.pem \
+    --ca-key ./pki/private/intermediate.key.pem \
+    --ca-pass-file ./secrets/intermediate.pass \
+    --template client \
+    --subject "CN=Alice Smith" \
+    --san email:alice@example.com \
+    --out-dir ./pki/certs
+```
+
+**Code signing сертификат:**
+```bash
+micropki ca issue-cert \
+    --ca-cert ./pki/certs/intermediate.cert.pem \
+    --ca-key ./pki/private/intermediate.key.pem \
+    --ca-pass-file ./secrets/intermediate.pass \
+    --template code_signing \
+    --subject "CN=My Code Signer" \
+    --out-dir ./pki/certs
+```
+
+### Проверка цепочки сертификатов
+
+```bash
+# Валидация полной цепочки: leaf → intermediate → root
+micropki chain verify \
+    --leaf ./pki/certs/example.com.cert.pem \
+    --intermediate ./pki/certs/intermediate.cert.pem \
+    --root ./pki/certs/ca.cert.pem
+
+# Проверка через OpenSSL
+openssl verify \
+    -CAfile pki/certs/ca.cert.pem \
+    -untrusted pki/certs/intermediate.cert.pem \
+    pki/certs/example.com.cert.pem
+```
+
 ### Параметры командной строки
 
 | Параметр | Описание | Обязательный |
@@ -92,6 +163,11 @@ micropki ca init \
 | `--validity-days` | Срок действия в днях (по умолчанию: 3650 ≈ 10 лет) | Нет |
 | `--log-file` | Путь к файлу лога (по умолчанию: stderr) | Нет |
 | `--force` | Перезаписывать существующие файлы без подтверждения | Нет |
+| `--san` | Subject Alternative Name (например, `dns:example.com`) | Для issue-cert |
+| `--template` | Шаблон: `server`, `client` или `code_signing` | Для issue-cert |
+| `--ca-cert` | Путь к сертификату Intermediate CA | Для issue-cert, issue-intermediate |
+| `--ca-key` | Путь к ключу Intermediate CA | Для issue-cert, issue-intermediate |
+| `--pathlen` | Ограничение длины пути (по умолчанию: 0) | Для issue-intermediate |
 
 ## Структура проекта
 
@@ -104,16 +180,14 @@ micropki/
 │   ├── ca.py          # Операции с корневым CA
 │   ├── certificates.py # Работа с X.509 сертификатами
 │   ├── crypto_utils.py # Криптографические утилиты
+│   ├── csr.py          # Работа с CSR
+│   ├── templates.py    # Шаблоны сертификатов
+│   ├── chain.py        # Валидация цепочек
 │   └── logger.py      # Настройка логирования
 ├── tests/             # Модульные тесты
-│   ├── __init__.py
-│   ├── test_ca.py
-│   ├── test_certificates.py
-│   └── test_crypto_utils.py
+│ 
 ├── scripts/           # Скрипты для верификации
-│   ├── test_key_match.py
-│   ├── test_encrypted_key_load.py
-│   └── verify_with_openssl.sh
+│   
 ├── setup.py           # Файл установки пакета
 ├── requirements.txt   # Зависимости Python
 ├── README.md         # Этот файл
@@ -132,6 +206,17 @@ pytest tests/ -v
 pytest tests/ --cov=micropki --cov-report=term-missing
 
 pytest tests/test_ca.py::test_ca_initialization_rsa -v
+```
+
+### Тестирование TLS соединения
+
+```bash
+# Запуск тестового TLS сервера и клиента
+./scripts/test_tls_handshake.sh \
+    ./pki/certs/example.com.cert.pem \
+    ./pki/certs/example.com.key.pem \
+    ./pki/certs/ca.cert.pem \
+    8443
 ```
 
 ### Ручная верификация
@@ -271,4 +356,10 @@ micropki ca --help
 micropki ca init --help
 
 micropki --version
+
+micropki ca issue-intermediate --help
+
+micropki ca issue-cert --help
+
+micropki chain verify --help
 ```
