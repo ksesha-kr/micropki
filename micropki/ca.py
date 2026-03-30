@@ -21,6 +21,9 @@ from micropki.templates import validate_san_types, TemplateError
 from micropki.logger import setup_logger
 import logging
 
+from micropki.database import CertificateDatabase, DatabaseError
+from micropki.serial import SerialGenerator
+
 logger = logging.getLogger(__name__)
 
 
@@ -177,7 +180,8 @@ Path Length Constraint: {pathlen}
             key_type: str,
             key_size: int,
             passphrase_file: str,
-            validity_days: int
+            validity_days: int,
+            db_path: Optional[str] = None
     ) -> Dict[str, str]:
         try:
             self.logger.info("Starting Root CA initialization")
@@ -226,6 +230,9 @@ Path Length Constraint: {pathlen}
             except CertificateError as e:
                 self.logger.warning(f"Self-consistency check warning: {str(e)}")
 
+            if db_path:
+                self._store_certificate_in_db(certificate, db_path)
+
             self.logger.info("Root CA initialization completed successfully")
 
             return {
@@ -252,7 +259,8 @@ Path Length Constraint: {pathlen}
             key_size: int,
             passphrase_file: str,
             validity_days: int,
-            pathlen: int = 0
+            pathlen: int = 0,
+            db_path: Optional[str] = None
     ) -> Dict[str, str]:
         try:
             self.logger.info("Starting Intermediate CA issuance")
@@ -315,6 +323,9 @@ Path Length Constraint: {pathlen}
                 issuer_dn=root_cert.subject.rfc4514_string()
             )
 
+            if db_path:
+                self._store_certificate_in_db(intermediate_cert, db_path)
+
             self.logger.info("Intermediate CA issued successfully")
 
             return {
@@ -337,7 +348,8 @@ Path Length Constraint: {pathlen}
             san_entries: Optional[List[str]] = None,
             out_dir: str = None,
             validity_days: int = 365,
-            csr_path: Optional[str] = None
+            csr_path: Optional[str] = None,
+            db_path: Optional[str] = None
     ) -> Dict[str, str]:
 
         try:
@@ -384,6 +396,9 @@ Path Length Constraint: {pathlen}
                 with open(cert_path, 'wb') as f:
                     f.write(cert.public_bytes(serialization.Encoding.PEM))
 
+                if db_path:
+                    self._store_certificate_in_db(cert, db_path)
+
                 return {'certificate': str(cert_path)}
 
             else:
@@ -429,6 +444,9 @@ Path Length Constraint: {pathlen}
 
                 self.logger.warning(f"Unencrypted private key saved to {key_path}")
 
+                if db_path:
+                    self._store_certificate_in_db(cert, db_path)
+
                 return {
                     'certificate': str(cert_path),
                     'private_key': str(key_path)
@@ -440,3 +458,26 @@ Path Length Constraint: {pathlen}
         except Exception as e:
             self.logger.error(f"Certificate issuance failed: {str(e)}")
             raise CAError(str(e))
+
+    def _store_certificate_in_db(self, cert: x509.Certificate, db_path: str):
+        try:
+            from micropki.certificates import certificate_to_pem
+            db = CertificateDatabase(db_path)
+
+            cert_data = {
+                'serial_hex': hex(cert.serial_number)[2:].upper(),
+                'subject': cert.subject.rfc4514_string(),
+                'issuer': cert.issuer.rfc4514_string(),
+                'not_before': cert.not_valid_before_utc.isoformat(),
+                'not_after': cert.not_valid_after_utc.isoformat(),
+                'cert_pem': certificate_to_pem(cert).decode('utf-8'),
+                'status': 'valid'
+            }
+
+            db.insert_certificate(cert_data)
+            db.close()
+            self.logger.info(f"Certificate stored in database with serial {cert_data['serial_hex']}")
+
+        except DatabaseError as e:
+            self.logger.error(f"Database insertion failed: {str(e)}")
+            raise CAError(f"Failed to store certificate in database: {str(e)}")
