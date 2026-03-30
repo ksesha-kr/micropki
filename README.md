@@ -181,6 +181,9 @@ micropki/
 │   ├── certificates.py # Работа с X.509 сертификатами
 │   ├── crypto_utils.py # Криптографические утилиты
 │   ├── csr.py          # Работа с CSR
+│   ├── database.py
+│   ├── repository.py
+│   ├── serial.py
 │   ├── templates.py    # Шаблоны сертификатов
 │   ├── chain.py        # Валидация цепочек
 │   └── logger.py      # Настройка логирования
@@ -192,6 +195,92 @@ micropki/
 ├── requirements.txt   # Зависимости Python
 ├── README.md         # Этот файл
 └── .gitignore        # Правила для Git
+```
+
+
+### Инициализация базы данных
+
+```bash
+# Создание базы данных SQLite
+micropki db init --db-path ./pki/micropki.db
+```
+
+### Просмотр выданных сертификатов
+
+```bash
+# Список всех сертификатов
+micropki ca list-certs
+
+# Фильтр по статусу
+micropki ca list-certs --status valid
+
+# Вывод в JSON формате
+micropki ca list-certs --format json
+
+# Вывод в CSV формате
+micropki ca list-certs --format csv
+```
+
+### Просмотр сертификата по серийному номеру
+
+```bash
+# Вывод в PEM формате
+micropki ca show-cert 1A2B3C4D
+
+# Вывод в текстовом формате
+micropki ca show-cert 1A2B3C4D --format text
+```
+
+### Запуск HTTP репозитория
+
+```bash
+# Запуск сервера на localhost:8080
+micropki repo serve
+
+# Запуск на всех интерфейсах с кастомным портом
+micropki repo serve --host 0.0.0.0 --port 8443 --db-path ./pki/micropki.db
+```
+
+### API Endpoints
+
+| Endpoint | Метод | Описание |
+|----------|-------|----------|
+| `/certificate/<serial>` | GET | Получение сертификата по серийному номеру |
+| `/ca/root` | GET | Получение корневого CA сертификата |
+| `/ca/intermediate` | GET | Получение промежуточного CA сертификата |
+| `/crl` | GET | CRL (Sprint 4, возвращает 501) |
+| `/health` | GET | Проверка состояния сервера |
+
+### Примеры API запросов
+
+```bash
+# Получение сертификата по серийному номеру
+curl http://localhost:8080/certificate/1A2B3C4D --output cert.pem
+
+# Получение корневого CA
+curl http://localhost:8080/ca/root --output root.pem
+
+# Получение промежуточного CA
+curl http://localhost:8080/ca/intermediate --output intermediate.pem
+
+# Проверка CRL (плейсхолдер)
+curl http://localhost:8080/crl
+```
+
+### Автоматическое сохранение в БД
+
+При выпуске сертификата через `ca issue-cert` или `ca issue-intermediate` сертификат автоматически сохраняется в базу данных. Для этого необходимо указать параметр `--db-path`:
+
+```bash
+micropki ca issue-cert \
+    --ca-cert ./pki/certs/intermediate.cert.pem \
+    --ca-key ./pki/private/intermediate.key.pem \
+    --ca-pass-file ./secrets/intermediate.pass \
+    --template server \
+    --subject "CN=example.com" \
+    --san dns:example.com \
+    --out-dir ./pki/certs \
+    --db-path ./pki/micropki.db
 ```
 
 ## Тестирование
@@ -217,6 +306,16 @@ pytest tests/test_ca.py::test_ca_initialization_rsa -v
     ./pki/certs/example.com.key.pem \
     ./pki/certs/ca.cert.pem \
     8443
+```
+
+Тест уникальности серийных номеров
+```
+python scripts/test_unique_serials.py
+```
+
+Полный тест workflow
+```
+python scripts/test_full_workflow.py
 ```
 
 ### Ручная верификация
