@@ -165,6 +165,124 @@ def setup_chain_verify_parser(subparsers):
     return parser
 
 
+def setup_db_init_parser(subparsers):
+    parser = subparsers.add_parser(
+        'init',
+        help='Initialize certificate database',
+        description='Create SQLite database schema for certificate storage'
+    )
+
+    parser.add_argument(
+        '--db-path',
+        default='./pki/micropki.db',
+        help='Path to SQLite database (default: ./pki/micropki.db)'
+    )
+
+    parser.add_argument(
+        '--force',
+        action='store_true',
+        help='Recreate database if it exists'
+    )
+
+    return parser
+
+
+def setup_ca_list_certs_parser(subparsers):
+    parser = subparsers.add_parser(
+        'list-certs',
+        help='List issued certificates',
+        description='Display all certificates from the database'
+    )
+
+    parser.add_argument(
+        '--status',
+        choices=['valid', 'revoked', 'expired'],
+        help='Filter by certificate status'
+    )
+
+    parser.add_argument(
+        '--format',
+        choices=['table', 'json', 'csv'],
+        default='table',
+        help='Output format (default: table)'
+    )
+
+    parser.add_argument(
+        '--db-path',
+        default='./pki/micropki.db',
+        help='Path to SQLite database (default: ./pki/micropki.db)'
+    )
+
+    return parser
+
+
+def setup_ca_show_cert_parser(subparsers):
+    parser = subparsers.add_parser(
+        'show-cert',
+        help='Show certificate by serial number',
+        description='Retrieve and display a certificate from the database'
+    )
+
+    parser.add_argument(
+        'serial',
+        help='Certificate serial number in hexadecimal format'
+    )
+
+    parser.add_argument(
+        '--format',
+        choices=['pem', 'text'],
+        default='pem',
+        help='Output format (default: pem)'
+    )
+
+    parser.add_argument(
+        '--db-path',
+        default='./pki/micropki.db',
+        help='Path to SQLite database (default: ./pki/micropki.db)'
+    )
+
+    return parser
+
+
+def setup_repo_serve_parser(subparsers):
+    parser = subparsers.add_parser(
+        'serve',
+        help='Start repository HTTP server',
+        description='Start HTTP server for certificate distribution'
+    )
+
+    parser.add_argument(
+        '--host',
+        default='127.0.0.1',
+        help='Bind address (default: 127.0.0.1)'
+    )
+
+    parser.add_argument(
+        '--port',
+        type=int,
+        default=8080,
+        help='TCP port (default: 8080)'
+    )
+
+    parser.add_argument(
+        '--db-path',
+        default='./pki/micropki.db',
+        help='Path to SQLite database (default: ./pki/micropki.db)'
+    )
+
+    parser.add_argument(
+        '--cert-dir',
+        default='./pki/certs',
+        help='Directory containing PEM certificates (default: ./pki/certs)'
+    )
+
+    parser.add_argument(
+        '--log-file',
+        help='Optional path to log file'
+    )
+
+    return parser
+
 def cmd_ca_init(args):
     try:
         validate_subject(args.subject)
@@ -283,6 +401,153 @@ def cmd_chain_verify(args):
         return 1
 
 
+def cmd_db_init(args):
+    try:
+        from micropki.database import CertificateDatabase
+
+        db_path = Path(args.db_path)
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if args.force and db_path.exists():
+            db_path.unlink()
+            print(f"Removed existing database: {db_path}")
+
+        db = CertificateDatabase(str(db_path))
+        db.init_schema()
+        db.close()
+
+        print(f"Database initialized successfully at {db_path}")
+        return 0
+
+    except Exception as e:
+        print(f"Error initializing database: {str(e)}", file=sys.stderr)
+        return 1
+
+
+def cmd_ca_list_certs(args):
+    try:
+        from micropki.database import CertificateDatabase
+        import json
+        import csv
+        import sys
+
+        db = CertificateDatabase(args.db_path)
+        certificates = db.list_certificates(status=args.status)
+        db.close()
+
+        if args.format == 'json':
+            output = []
+            for cert in certificates:
+                output.append({
+                    'serial': cert['serial_hex'],
+                    'subject': cert['subject'],
+                    'issuer': cert['issuer'],
+                    'not_before': cert['not_before'],
+                    'not_after': cert['not_after'],
+                    'status': cert['status']
+                })
+            print(json.dumps(output, indent=2))
+
+        elif args.format == 'csv':
+            writer = csv.writer(sys.stdout)
+            writer.writerow(['Serial', 'Subject', 'Issuer', 'Not Before', 'Not After', 'Status'])
+            for cert in certificates:
+                writer.writerow([
+                    cert['serial_hex'],
+                    cert['subject'],
+                    cert['issuer'],
+                    cert['not_before'],
+                    cert['not_after'],
+                    cert['status']
+                ])
+
+        else:
+            print(f"{'Serial':<20} {'Subject':<40} {'Status':<10}")
+            print("-" * 70)
+            for cert in certificates:
+                subject = cert['subject'][:40]
+                print(f"{cert['serial_hex']:<20} {subject:<40} {cert['status']:<10}")
+            print(f"\nTotal: {len(certificates)} certificates")
+
+        return 0
+
+    except Exception as e:
+        print(f"Error listing certificates: {str(e)}", file=sys.stderr)
+        return 1
+
+
+def cmd_ca_show_cert(args):
+    try:
+        from micropki.database import CertificateDatabase
+        from micropki.serial import validate_serial_hex
+        from cryptography import x509
+        from cryptography.hazmat.backends import default_backend
+
+        if not validate_serial_hex(args.serial):
+            print("Invalid serial number format. Must be hexadecimal.", file=sys.stderr)
+            return 1
+
+        db = CertificateDatabase(args.db_path)
+        cert_record = db.get_certificate_by_serial(args.serial)
+        db.close()
+
+        if not cert_record:
+            print(f"Certificate with serial {args.serial} not found", file=sys.stderr)
+            return 1
+
+        if args.format == 'text':
+            cert = x509.load_pem_x509_certificate(
+                cert_record['cert_pem'].encode(),
+                default_backend()
+            )
+            print(f"Certificate:")
+            print(f"  Serial: {cert_record['serial_hex']}")
+            print(f"  Subject: {cert_record['subject']}")
+            print(f"  Issuer: {cert_record['issuer']}")
+            print(f"  Valid From: {cert_record['not_before']}")
+            print(f"  Valid To: {cert_record['not_after']}")
+            print(f"  Status: {cert_record['status']}")
+        else:
+            print(cert_record['cert_pem'])
+
+        return 0
+
+    except Exception as e:
+        print(f"Error showing certificate: {str(e)}", file=sys.stderr)
+        return 1
+
+
+def cmd_repo_serve(args):
+    try:
+        from micropki.repository import RepositoryServer
+        from micropki.logger import setup_logger
+
+        if args.log_file:
+            logger = setup_logger("micropki.repo", args.log_file)
+
+        server = RepositoryServer(
+            db_path=args.db_path,
+            cert_dir=args.cert_dir,
+            host=args.host,
+            port=args.port
+        )
+
+        print(f"Starting repository server on {args.host}:{args.port}")
+        print(f"Database: {args.db_path}")
+        print(f"Certificate directory: {args.cert_dir}")
+        print("Press Ctrl+C to stop")
+
+        server.start()
+
+        return 0
+
+    except KeyboardInterrupt:
+        print("\nServer stopped")
+        return 0
+    except Exception as e:
+        print(f"Error starting server: {str(e)}", file=sys.stderr)
+        return 1
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         prog='micropki',
@@ -303,6 +568,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         help='Available commands'
     )
 
+    db_parser = subparsers.add_parser('db', help='Database operations')
+    db_subparsers = db_parser.add_subparsers(dest='db_command', required=True)
+    setup_db_init_parser(db_subparsers)
+
+    repo_parser = subparsers.add_parser('repo', help='Repository operations')
+    repo_subparsers = repo_parser.add_subparsers(dest='repo_command', required=True)
+    setup_repo_serve_parser(repo_subparsers)
+
     ca_parser = subparsers.add_parser('ca', help='Certificate Authority operations')
     ca_subparsers = ca_parser.add_subparsers(
         dest='ca_command',
@@ -313,6 +586,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     setup_ca_init_parser(ca_subparsers)
     setup_ca_issue_intermediate_parser(ca_subparsers)
     setup_ca_issue_cert_parser(ca_subparsers)
+    setup_ca_list_certs_parser(ca_subparsers)
+    setup_ca_show_cert_parser(ca_subparsers)
 
     chain_parser = subparsers.add_parser('chain', help='Chain validation operations')
     chain_subparsers = chain_parser.add_subparsers(
@@ -340,6 +615,17 @@ def main(argv: Optional[List[str]] = None) -> int:
         else:
             print(f"Unknown chain command: {args.chain_command}", file=sys.stderr)
             return 1
+    elif args.command == 'db':
+        if args.db_command == 'init':
+            return cmd_db_init(args)
+    elif args.command == 'repo':
+        if args.repo_command == 'serve':
+            return cmd_repo_serve(args)
+    elif args.command == 'ca':
+        if args.ca_command == 'list-certs':
+            return cmd_ca_list_certs(args)
+        elif args.ca_command == 'show-cert':
+            return cmd_ca_show_cert(args)
     else:
         print(f"Unknown command: {args.command}", file=sys.stderr)
         return 1
