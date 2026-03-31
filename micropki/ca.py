@@ -481,3 +481,104 @@ Path Length Constraint: {pathlen}
         except DatabaseError as e:
             self.logger.error(f"Database insertion failed: {str(e)}")
             raise CAError(f"Failed to store certificate in database: {str(e)}")
+
+    def revoke_certificate(self, serial_hex: str, reason: str, db_path: str, force: bool = False) -> Dict[str, Any]:
+        from micropki.database import CertificateDatabase
+        from micropki.revocation import revoke_certificate as revoke
+
+        try:
+            db = CertificateDatabase(db_path)
+            result = revoke(db, serial_hex, reason, force)
+            db.close()
+            return result
+        except Exception as e:
+            self.logger.error(f"Revocation failed: {str(e)}")
+            raise CAError(str(e))
+
+    def generate_crl(
+            self,
+            ca_type: str,
+            ca_cert_path: str,
+            ca_key_path: str,
+            ca_passphrase_file: str,
+            db_path: str,
+            out_dir: str,
+            next_update_days: int = 7,
+            out_file: Optional[str] = None
+    ) -> Dict[str, Any]:
+        from micropki.database import CertificateDatabase
+        from micropki.crypto_utils import load_encrypted_private_key, read_passphrase_from_file
+        from micropki.crl import generate_crl, save_crl, get_reason_code
+        from cryptography import x509
+        from cryptography.hazmat.backends import default_backend
+        from pathlib import Path
+
+        try:
+            self.logger.info(f"Generating CRL for {ca_type} CA")
+
+            with open(ca_cert_path, 'rb') as f:
+                ca_cert_data = f.read()
+            ca_cert = x509.load_pem_x509_certificate(ca_cert_data, default_backend())
+
+            ca_passphrase = read_passphrase_from_file(ca_passphrase_file)
+            ca_key = load_encrypted_private_key(ca_key_path, ca_passphrase)
+
+            db = CertificateDatabase(db_path)
+            revoked_certs = db.get_revoked_certificates_by_issuer(ca_cert.subject.rfc4514_string())
+
+            crl_metadata = db.get_crl_metadata(ca_cert.subject.rfc4514_string())
+            crl_number = 1
+            if crl_metadata:
+                crl_number = crl_metadata['crl_number'] + 1
+
+            crl = generate_crl(
+                issuer_cert=ca_cert,
+                issuer_key=ca_key,
+                revoked_certs=revoked_certs,
+                next_update_days=next_update_days,
+                crl_number=crl_number
+            )
+
+            if out_file:
+                crl_path = Path(out_file)
+            else:
+                crl_dir = Path(out_dir) / "crl"
+                crl_dir.mkdir(parents=True, exist_ok=True)
+                crl_path = crl_dir / f"{ca_type}.crl.pem"
+
+            save_crl(crl, str(crl_path))
+
+            db.update_crl_metadata(
+                ca_subject=ca_cert.subject.rfc4514_string(),
+                crl_number=crl_number,
+                next_update=(datetime.now(timezone.utc) + timedelta(days=next_update_days)).isoformat(),
+                crl_path=str(crl_path)
+            )
+
+            db.close()
+
+            self.logger.info(f"CRL generated successfully for {ca_type} CA")
+
+            return {
+                'crl_path': str(crl_path),
+                'crl_number': crl_number,
+                'revoked_count': len(revoked_certs),
+                'next_update_days': next_update_days
+            }
+
+        except Exception as e:
+            self.logger.error(f"CRL generation failed: {str(e)}")
+            raise CAError(str(e))
+
+    def check_revoked(self, serial_hex: str, db_path: str) -> Dict[str, Any]:
+        from micropki.database import CertificateDatabase
+        from micropki.revocation import check_revoked as check
+
+        try:
+            db = CertificateDatabase(db_path)
+            result = check(db, serial_hex)
+            db.close()
+            return result
+        except Exception as e:
+            self.logger.error(f"Status check failed: {str(e)}")
+            raise CAError(str(e))
