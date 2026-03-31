@@ -55,7 +55,10 @@ class RepositoryServer:
                 return "Invalid CA level. Must be 'root' or 'intermediate'", 400
 
             filename = 'ca.cert.pem' if level == 'root' else 'intermediate.cert.pem'
-            cert_path = self.cert_dir / filename
+            cert_path = self.cert_dir / 'certs' / filename
+
+            if not cert_path.exists():
+                cert_path = self.cert_dir / filename
 
             if not cert_path.exists():
                 return f"{level.capitalize()} CA certificate not found", 404
@@ -70,7 +73,36 @@ class RepositoryServer:
 
         @self.app.route('/crl', methods=['GET'])
         def get_crl():
-            return "CRL generation not yet implemented", 501, {'Content-Type': 'application/pkix-crl'}
+            ca_type = request.args.get('ca', 'intermediate')
+
+            if ca_type not in ['root', 'intermediate']:
+                return "Invalid CA type. Must be 'root' or 'intermediate'", 400
+
+            filename = 'root.crl.pem' if ca_type == 'root' else 'intermediate.crl.pem'
+            crl_dir = self.cert_dir / 'crl'
+            crl_path = crl_dir / filename
+
+            if not crl_path.exists():
+                crl_path = Path(self.cert_dir).parent / 'crl' / filename
+
+            if not crl_path.exists():
+                return f"{ca_type.capitalize()} CRL not found", 404
+
+            try:
+                with open(crl_path, 'rb') as f:
+                    crl_data = f.read()
+
+                from datetime import datetime
+                mod_time = datetime.fromtimestamp(crl_path.stat().st_mtime)
+
+                return crl_data, 200, {
+                    'Content-Type': 'application/pkix-crl',
+                    'Last-Modified': mod_time.strftime('%a, %d %b %Y %H:%M:%S GMT'),
+                    'Cache-Control': 'max-age=604800'
+                }
+            except Exception as e:
+                logger.error(f"Error reading CRL: {str(e)}")
+                return "Internal server error", 500
 
         @self.app.route('/health', methods=['GET'])
         def health():
