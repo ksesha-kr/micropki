@@ -548,6 +548,164 @@ def cmd_repo_serve(args):
         print(f"Error starting server: {str(e)}", file=sys.stderr)
         return 1
 
+def setup_ca_revoke_parser(subparsers):
+    parser = subparsers.add_parser(
+        'revoke',
+        help='Revoke a certificate',
+        description='Revoke an issued certificate by serial number'
+    )
+
+    parser.add_argument('serial', help='Certificate serial number in hexadecimal format')
+    parser.add_argument('--reason', default='unspecified',
+                        choices=['unspecified', 'keyCompromise', 'cACompromise', 'affiliationChanged',
+                                 'superseded', 'cessationOfOperation', 'certificateHold', 'removeFromCRL',
+                                 'privilegeWithdrawn', 'aACompromise'],
+                        help='Revocation reason (default: unspecified)')
+    parser.add_argument('--force', action='store_true', help='Skip confirmation prompt')
+    parser.add_argument('--db-path', default='./pki/micropki.db', help='Path to SQLite database')
+
+    return parser
+
+
+def setup_ca_gen_crl_parser(subparsers):
+    parser = subparsers.add_parser(
+        'gen-crl',
+        help='Generate Certificate Revocation List',
+        description='Generate CRL for specified CA'
+    )
+
+    parser.add_argument('--ca', required=True, choices=['root', 'intermediate'],
+                        help='CA type to generate CRL for')
+    parser.add_argument('--ca-cert', help='Path to CA certificate (auto-detected if not specified)')
+    parser.add_argument('--ca-key', help='Path to CA private key (auto-detected if not specified)')
+    parser.add_argument('--ca-pass-file', help='Path to passphrase file for CA key')
+    parser.add_argument('--next-update', type=int, default=7, help='Days until next CRL update (default: 7)')
+    parser.add_argument('--out-file', help='Output file path (default: auto-generated)')
+    parser.add_argument('--out-dir', default='./pki', help='Output directory (default: ./pki)')
+    parser.add_argument('--db-path', default='./pki/micropki.db', help='Path to SQLite database')
+    parser.add_argument('--log-file', help='Optional path to log file')
+
+    return parser
+
+
+def setup_ca_check_revoked_parser(subparsers):
+    parser = subparsers.add_parser(
+        'check-revoked',
+        help='Check if a certificate is revoked',
+        description='Check revocation status by serial number'
+    )
+
+    parser.add_argument('serial', help='Certificate serial number in hexadecimal format')
+    parser.add_argument('--db-path', default='./pki/micropki.db', help='Path to SQLite database')
+
+    return parser
+
+
+def cmd_ca_revoke(args):
+    try:
+        from micropki.ca import RootCA
+        from micropki.serial import validate_serial_hex
+
+        if not validate_serial_hex(args.serial):
+            print("Invalid serial number format. Must be hexadecimal.", file=sys.stderr)
+            return 1
+
+        ca = RootCA(out_dir='.', log_file=None)
+        result = ca.revoke_certificate(
+            serial_hex=args.serial,
+            reason=args.reason,
+            db_path=args.db_path,
+            force=args.force
+        )
+
+        if result['status'] == 'already_revoked':
+            print(f"Certificate {args.serial} is already revoked")
+            return 0
+        elif result['status'] == 'cancelled':
+            print("Revocation cancelled")
+            return 0
+        elif result['status'] == 'revoked':
+            print(f"Certificate {args.serial} revoked successfully")
+            print(f"   Reason: {args.reason}")
+            return 0
+
+    except Exception as e:
+        print(f"Error: {str(e)}", file=sys.stderr)
+        return 1
+
+
+def cmd_ca_gen_crl(args):
+    try:
+        from micropki.ca import RootCA
+        from pathlib import Path
+
+        out_dir = Path(args.out_dir)
+
+        if args.ca == 'root':
+            ca_cert = args.ca_cert or str(out_dir / 'certs' / 'ca.cert.pem')
+            ca_key = args.ca_key or str(out_dir / 'private' / 'ca.key.pem')
+            ca_pass = args.ca_pass_file or str(out_dir.parent / 'secrets' / 'root.pass')
+        else:
+            ca_cert = args.ca_cert or str(out_dir / 'certs' / 'intermediate.cert.pem')
+            ca_key = args.ca_key or str(out_dir / 'private' / 'intermediate.key.pem')
+            ca_pass = args.ca_pass_file or str(out_dir.parent / 'secrets' / 'intermediate.pass')
+
+        ca = RootCA(out_dir=str(out_dir), log_file=args.log_file)
+        result = ca.generate_crl(
+            ca_type=args.ca,
+            ca_cert_path=ca_cert,
+            ca_key_path=ca_key,
+            ca_passphrase_file=ca_pass,
+            db_path=args.db_path,
+            out_dir=args.out_dir,
+            next_update_days=args.next_update,
+            out_file=args.out_file
+        )
+
+        print(f"\nCRL generated successfully!")
+        print(f"File: {result['crl_path']}")
+        print(f"CRL Number: {result['crl_number']}")
+        print(f"Revoked certificates: {result['revoked_count']}")
+        print(f"Next update: {result['next_update_days']} days")
+
+        return 0
+
+    except Exception as e:
+        print(f"Error: {str(e)}", file=sys.stderr)
+        return 1
+
+
+def cmd_ca_check_revoked(args):
+    try:
+        from micropki.ca import RootCA
+        from micropki.serial import validate_serial_hex
+
+        if not validate_serial_hex(args.serial):
+            print("Invalid serial number format. Must be hexadecimal.", file=sys.stderr)
+            return 1
+
+        ca = RootCA(out_dir='.', log_file=None)
+        result = ca.check_revoked(args.serial, args.db_path)
+
+        if not result['exists']:
+            print(f"Certificate with serial {args.serial} not found", file=sys.stderr)
+            return 1
+
+        if result['revoked']:
+            print(f"Certificate {args.serial} is REVOKED")
+            if result.get('revocation_reason'):
+                print(f"   Reason: {result['revocation_reason']}")
+            if result.get('revocation_date'):
+                print(f"   Date: {result['revocation_date']}")
+            return 0
+        else:
+            print(f"Certificate {args.serial} is VALID")
+            return 0
+
+    except Exception as e:
+        print(f"Error: {str(e)}", file=sys.stderr)
+        return 1
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         prog='micropki',
@@ -588,6 +746,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     setup_ca_issue_cert_parser(ca_subparsers)
     setup_ca_list_certs_parser(ca_subparsers)
     setup_ca_show_cert_parser(ca_subparsers)
+    setup_ca_revoke_parser(ca_subparsers)
+    setup_ca_gen_crl_parser(ca_subparsers)
+    setup_ca_check_revoked_parser(ca_subparsers)
 
     chain_parser = subparsers.add_parser('chain', help='Chain validation operations')
     chain_subparsers = chain_parser.add_subparsers(
@@ -626,6 +787,12 @@ def main(argv: Optional[List[str]] = None) -> int:
             return cmd_ca_list_certs(args)
         elif args.ca_command == 'show-cert':
             return cmd_ca_show_cert(args)
+    elif args.ca_command == 'revoke':
+        return cmd_ca_revoke(args)
+    elif args.ca_command == 'gen-crl':
+        return cmd_ca_gen_crl(args)
+    elif args.ca_command == 'check-revoked':
+        return cmd_ca_check_revoked(args)
     else:
         print(f"Unknown command: {args.command}", file=sys.stderr)
         return 1
