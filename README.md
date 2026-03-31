@@ -151,6 +151,66 @@ openssl verify \
     pki/certs/example.com.cert.pem
 ```
 
+### Отзыв сертификата
+
+```bash
+# Отзыв сертификата по серийному номеру
+micropki ca revoke 1A2B3C4D --reason keyCompromise
+
+# Отзыв без подтверждения
+micropki ca revoke 1A2B3C4D --reason superseded --force
+```
+
+### Поддерживаемые причины отзыва
+
+| Код | Описание |
+|-----|----------|
+| unspecified | Не указано (по умолчанию) |
+| keyCompromise | Компрометация ключа субъекта |
+| cACompromise | Компрометация ключа CA |
+| affiliationChanged | Изменение принадлежности |
+| superseded | Заменен новым сертификатом |
+| cessationOfOperation | Прекращение деятельности |
+| certificateHold | Временная приостановка |
+| removeFromCRL | Удаление из CRL |
+| privilegeWithdrawn | Отзыв привилегий |
+| aACompromise | Компрометация ключа атрибутного CA |
+
+### Генерация CRL
+
+```bash
+# Генерация CRL для Intermediate CA
+micropki ca gen-crl --ca intermediate
+
+# Генерация CRL для Root CA с указанием срока обновления
+micropki ca gen-crl --ca root --next-update 14
+
+# Генерация CRL в указанный файл
+micropki ca gen-crl --ca intermediate --out-file ./custom.crl.pem
+```
+
+### Проверка статуса сертификата
+
+```bash
+# Проверка, отозван ли сертификат
+micropki ca check-revoked 1A2B3C4D
+```
+
+### HTTP эндпоинты для CRL
+
+```bash
+# Получение CRL Intermediate CA
+curl http://localhost:8080/crl
+
+# Получение CRL Root CA
+curl http://localhost:8080/crl?ca=root
+
+# Проверка CRL через OpenSSL
+openssl crl -in intermediate.crl.pem -inform PEM -text -noout
+openssl crl -in intermediate.crl.pem -inform PEM -CAfile intermediate.cert.pem -noout
+```
+
+
 ### Параметры командной строки
 
 | Параметр | Описание | Обязательный |
@@ -180,10 +240,12 @@ micropki/
 │   ├── ca.py          # Операции с корневым CA
 │   ├── certificates.py # Работа с X.509 сертификатами
 │   ├── crypto_utils.py # Криптографические утилиты
+│   ├── crl.py          # Генерация CRL
 │   ├── csr.py          # Работа с CSR
-│   ├── database.py
-│   ├── repository.py
-│   ├── serial.py
+│   ├── database.py     # Работа с SQLite
+│   ├── repository.py   # HTTP сервер
+│   └── revocation.py   # Управление отзывом
+│   ├── serial.py       # Генерация уникальных серийных номеров
 │   ├── templates.py    # Шаблоны сертификатов
 │   ├── chain.py        # Валидация цепочек
 │   └── logger.py      # Настройка логирования
