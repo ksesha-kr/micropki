@@ -114,6 +114,27 @@ def get_template_extensions(template: str, san_entries: Optional[List[str]] = No
             san = build_san_extension(san_entries)
             extensions.append(TemplateExtension(san, critical=False))
 
+    elif template == 'ocsp':
+        key_usage = x509.KeyUsage(
+            digital_signature=True,
+            content_commitment=False,
+            key_encipherment=False,
+            data_encipherment=False,
+            key_agreement=False,
+            key_cert_sign=False,
+            crl_sign=False,
+            encipher_only=False,
+            decipher_only=False
+        )
+        extensions.append(TemplateExtension(key_usage, critical=True))
+
+        eku = x509.ExtendedKeyUsage([ExtendedKeyUsageOID.OCSP_SIGNING])
+        extensions.append(TemplateExtension(eku, critical=False))
+
+        if san_entries:
+            san = build_san_extension(san_entries)
+            extensions.append(TemplateExtension(san, critical=False))
+
     else:
         raise TemplateError(f"Unknown template: {template}")
 
