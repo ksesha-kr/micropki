@@ -210,6 +210,41 @@ openssl crl -in intermediate.crl.pem -inform PEM -text -noout
 openssl crl -in intermediate.crl.pem -inform PEM -CAfile intermediate.cert.pem -noout
 ```
 
+### Выпуск OCSP сертификата
+
+```bash
+micropki ca issue-ocsp-cert \
+    --ca-cert ./pki/certs/intermediate.cert.pem \
+    --ca-key ./pki/private/intermediate.key.pem \
+    --ca-pass-file ./secrets/intermediate.pass \
+    --subject "CN=OCSP Responder,O=MicroPKI" \
+    --key-type rsa \
+    --key-size 2048 \
+    --out-dir ./pki/certs \
+    --validity-days 365
+```
+
+### Запуск OCSP responder сервера
+```
+micropki ocsp serve \
+    --host 127.0.0.1 \
+    --port 8081 \
+    --db-path ./pki/micropki.db \
+    --responder-cert ./pki/certs/ocsp.cert.pem \
+    --responder-key ./pki/certs/ocsp.key.pem \
+    --ca-cert ./pki/certs/intermediate.cert.pem \
+    --cache-ttl 120
+```
+
+### Генерация OCSP запроса
+```
+openssl ocsp \
+    -issuer ./pki/certs/intermediate.cert.pem \
+    -cert ./pki/certs/example.com.cert.pem \
+    -url http://localhost:8081/ocsp \
+    -resp_text \
+    -nonce
+```
 
 ### Параметры командной строки
 
@@ -248,7 +283,9 @@ micropki/
 │   ├── serial.py       # Генерация уникальных серийных номеров
 │   ├── templates.py    # Шаблоны сертификатов
 │   ├── chain.py        # Валидация цепочек
-│   └── logger.py      # Настройка логирования
+│   ├── logger.py      # Настройка логирования
+│   ├── ocsp.py        # Обработка OCSP запросов/ответов
+│   └── ocsp_responder.py   # HTTP сервер для OCSP
 ├── tests/             # Модульные тесты
 │ 
 ├── scripts/           # Скрипты для верификации
