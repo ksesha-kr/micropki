@@ -706,6 +706,112 @@ def cmd_ca_check_revoked(args):
         print(f"Error: {str(e)}", file=sys.stderr)
         return 1
 
+
+def setup_ca_issue_ocsp_cert_parser(subparsers):
+    parser = subparsers.add_parser(
+        'issue-ocsp-cert',
+        help='Issue OCSP responder certificate',
+        description='Issue a special-purpose OCSP signing certificate'
+    )
+
+    parser.add_argument('--ca-cert', required=True, help='CA certificate path')
+    parser.add_argument('--ca-key', required=True, help='CA private key path')
+    parser.add_argument('--ca-pass-file', required=True, help='CA passphrase file')
+    parser.add_argument('--subject', required=True, help='Subject DN')
+    parser.add_argument('--key-type', choices=['rsa', 'ecc'], default='rsa', help='Key type')
+    parser.add_argument('--key-size', type=int, default=2048, help='Key size (RSA: 2048+, ECC: 256)')
+    parser.add_argument('--san', action='append', help='Subject Alternative Name')
+    parser.add_argument('--out-dir', default='./pki/certs', help='Output directory')
+    parser.add_argument('--validity-days', type=int, default=365, help='Validity days')
+    parser.add_argument('--db-path', help='Database path for auto-storage')
+    parser.add_argument('--log-file', help='Log file path')
+
+    return parser
+
+
+def setup_ocsp_serve_parser(subparsers):
+    parser = subparsers.add_parser(
+        'serve',
+        help='Start OCSP responder',
+        description='Start OCSP responder server'
+    )
+
+    parser.add_argument('--host', default='127.0.0.1', help='Bind address')
+    parser.add_argument('--port', type=int, default=8081, help='TCP port')
+    parser.add_argument('--db-path', default='./pki/micropki.db', help='Database path')
+    parser.add_argument('--responder-cert', required=True, help='OCSP signing certificate')
+    parser.add_argument('--responder-key', required=True, help='OCSP private key')
+    parser.add_argument('--ca-cert', required=True, help='Issuer CA certificate')
+    parser.add_argument('--cache-ttl', type=int, default=60, help='Cache TTL in seconds')
+    parser.add_argument('--log-file', help='Log file path')
+
+    return parser
+
+
+def cmd_ca_issue_ocsp_cert(args):
+    try:
+        from micropki.ca import RootCA
+
+        ca = RootCA(out_dir='.', log_file=args.log_file)
+        result = ca.issue_ocsp_certificate(
+            ca_cert_path=args.ca_cert,
+            ca_key_path=args.ca_key,
+            ca_passphrase_file=args.ca_pass_file,
+            subject=args.subject,
+            key_type=args.key_type,
+            key_size=args.key_size,
+            out_dir=args.out_dir,
+            validity_days=args.validity_days,
+            san_entries=args.san,
+            db_path=args.db_path
+        )
+
+        print(f"\nOCSP responder certificate issued successfully!")
+        print(f"Certificate: {result['certificate']}")
+        print(f"Private key: {result['private_key']}")
+        print("\nWARNING: Private key is stored unencrypted!")
+
+        return 0
+
+    except Exception as e:
+        print(f"Error: {str(e)}", file=sys.stderr)
+        return 1
+
+
+def cmd_ocsp_serve(args):
+    try:
+        from micropki.ocsp_responder import OCSPResponder
+        from micropki.logger import setup_logger
+
+        if args.log_file:
+            setup_logger("micropki.ocsp", args.log_file)
+
+        responder = OCSPResponder(
+            db_path=args.db_path,
+            responder_cert_path=args.responder_cert,
+            responder_key_path=args.responder_key,
+            ca_cert_path=args.ca_cert,
+            host=args.host,
+            port=args.port,
+            cache_ttl=args.cache_ttl
+        )
+
+        print(f"Starting OCSP responder on {args.host}:{args.port}")
+        print(f"Database: {args.db_path}")
+        print(f"Cache TTL: {args.cache_ttl}s")
+        print("Press Ctrl+C to stop")
+
+        responder.start()
+
+        return 0
+
+    except KeyboardInterrupt:
+        print("\nOCSP responder stopped")
+        return 0
+    except Exception as e:
+        print(f"Error: {str(e)}", file=sys.stderr)
+        return 1
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         prog='micropki',
@@ -749,6 +855,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     setup_ca_revoke_parser(ca_subparsers)
     setup_ca_gen_crl_parser(ca_subparsers)
     setup_ca_check_revoked_parser(ca_subparsers)
+    setup_ca_issue_ocsp_cert_parser(ca_subparsers)
+
+    ocsp_parser = subparsers.add_parser('ocsp', help='OCSP responder operations')
+    ocsp_subparsers = ocsp_parser.add_subparsers(dest='ocsp_command', required=True)
+    setup_ocsp_serve_parser(ocsp_subparsers)
 
     chain_parser = subparsers.add_parser('chain', help='Chain validation operations')
     chain_subparsers = chain_parser.add_subparsers(
@@ -793,6 +904,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         return cmd_ca_gen_crl(args)
     elif args.ca_command == 'check-revoked':
         return cmd_ca_check_revoked(args)
+    elif args.command == 'ca':
+        if args.ca_command == 'issue-ocsp-cert':
+            return cmd_ca_issue_ocsp_cert(args)
+    elif args.command == 'ocsp':
+        if args.ocsp_command == 'serve':
+            return cmd_ocsp_serve(args)
     else:
         print(f"Unknown command: {args.command}", file=sys.stderr)
         return 1
