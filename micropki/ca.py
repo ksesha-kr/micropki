@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 from typing import Optional, Dict, Any, List
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.backends import default_backend
@@ -581,4 +581,94 @@ Path Length Constraint: {pathlen}
             return result
         except Exception as e:
             self.logger.error(f"Status check failed: {str(e)}")
+            raise CAError(str(e))
+
+    def issue_ocsp_certificate(
+            self,
+            ca_cert_path: str,
+            ca_key_path: str,
+            ca_passphrase_file: str,
+            subject: str,
+            key_type: str,
+            key_size: int,
+            out_dir: str,
+            validity_days: int = 365,
+            san_entries: Optional[List[str]] = None,
+            db_path: Optional[str] = None
+    ) -> Dict[str, str]:
+        try:
+            self.logger.info(f"Issuing OCSP responder certificate")
+
+            from micropki.crypto_utils import (
+                load_encrypted_private_key, read_passphrase_from_file,
+                generate_rsa_key, generate_ecc_key, encrypt_private_key,
+                set_secure_permissions
+            )
+            from micropki.certificates import (
+                parse_dn_string, generate_serial_number, compute_ski,
+                certificate_to_pem
+            )
+            from micropki.csr import generate_csr, sign_csr
+            from cryptography import x509
+            from cryptography.x509.oid import ExtendedKeyUsageOID
+            from cryptography.hazmat.backends import default_backend
+
+            ca_passphrase = read_passphrase_from_file(ca_passphrase_file)
+            ca_key = load_encrypted_private_key(ca_key_path, ca_passphrase)
+
+            with open(ca_cert_path, 'rb') as f:
+                ca_cert_data = f.read()
+            ca_cert = x509.load_pem_x509_certificate(ca_cert_data, default_backend())
+
+            if key_type == 'rsa':
+                ocsp_key = generate_rsa_key(key_size)
+            else:
+                ocsp_key = generate_ecc_key()
+
+            csr = generate_csr(subject, ocsp_key, key_type, is_ca=False)
+
+            cert = sign_csr(
+                csr=csr,
+                issuer_cert=ca_cert,
+                issuer_key=ca_key,
+                validity_days=validity_days,
+                template_name='ocsp',
+                san_entries=san_entries,
+                is_ca=False,
+                key_type=key_type
+            )
+
+            out_path = Path(out_dir)
+            out_path.mkdir(parents=True, exist_ok=True)
+
+            cert_filename = f"ocsp.cert.pem"
+            key_filename = f"ocsp.key.pem"
+
+            cert_path = out_path / cert_filename
+            key_path = out_path / key_filename
+
+            with open(cert_path, 'wb') as f:
+                f.write(certificate_to_pem(cert))
+
+            unencrypted_key = ocsp_key.private_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PrivateFormat.PKCS8,
+                encryption_algorithm=serialization.NoEncryption()
+            )
+            with open(key_path, 'wb') as f:
+                f.write(unencrypted_key)
+            set_secure_permissions(str(key_path), is_dir=False)
+
+            self.logger.warning(f"Unencrypted OCSP private key saved to {key_path}")
+
+            if db_path:
+                self._store_certificate_in_db(cert, db_path)
+
+            return {
+                'certificate': str(cert_path),
+                'private_key': str(key_path)
+            }
+
+        except Exception as e:
+            self.logger.error(f"OCSP certificate issuance failed: {str(e)}")
             raise CAError(str(e))
