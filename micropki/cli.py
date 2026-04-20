@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Optional, List
 from micropki.ca import RootCA, CAError
 from micropki.chain import verify_chain, get_chain_info
+from micropki.config import MicroPKIConfig, ConfigError
 import logging
 
 logger = logging.getLogger(__name__)
@@ -245,41 +246,20 @@ def setup_ca_show_cert_parser(subparsers):
 
 
 def setup_repo_serve_parser(subparsers):
-    parser = subparsers.add_parser(
-        'serve',
-        help='Start repository HTTP server',
-        description='Start HTTP server for certificate distribution'
-    )
+    parser = subparsers.add_parser('serve', help='Start repository HTTP server')
 
-    parser.add_argument(
-        '--host',
-        default='127.0.0.1',
-        help='Bind address (default: 127.0.0.1)'
-    )
+    parser.add_argument('--host', default='127.0.0.1', help='Bind address')
+    parser.add_argument('--port', type=int, default=8080, help='TCP port')
+    parser.add_argument('--db-path', default='./pki/micropki.db', help='Database path')
+    parser.add_argument('--cert-dir', default='./pki/certs', help='Certificate directory')
+    parser.add_argument('--log-file', help='Log file path')
 
-    parser.add_argument(
-        '--port',
-        type=int,
-        default=8080,
-        help='TCP port (default: 8080)'
-    )
-
-    parser.add_argument(
-        '--db-path',
-        default='./pki/micropki.db',
-        help='Path to SQLite database (default: ./pki/micropki.db)'
-    )
-
-    parser.add_argument(
-        '--cert-dir',
-        default='./pki/certs',
-        help='Directory containing PEM certificates (default: ./pki/certs)'
-    )
-
-    parser.add_argument(
-        '--log-file',
-        help='Optional path to log file'
-    )
+    # OCSP integration flags
+    parser.add_argument('--enable-ocsp', action='store_true', help='Enable OCSP endpoint')
+    parser.add_argument('--ocsp-responder-cert', help='OCSP signing certificate')
+    parser.add_argument('--ocsp-responder-key', help='OCSP private key')
+    parser.add_argument('--ocsp-ca-cert', help='Issuer CA certificate for OCSP')
+    parser.add_argument('--ocsp-cache-ttl', type=int, default=60, help='OCSP cache TTL in seconds')
 
     return parser
 
@@ -523,18 +503,29 @@ def cmd_repo_serve(args):
         from micropki.logger import setup_logger
 
         if args.log_file:
-            logger = setup_logger("micropki.repo", args.log_file)
+            setup_logger("micropki.repo", args.log_file)
+
+        if args.enable_ocsp:
+            if not all([args.ocsp_responder_cert, args.ocsp_responder_key, args.ocsp_ca_cert]):
+                print("Error: --enable-ocsp requires --ocsp-responder-cert, --ocsp-responder-key, and --ocsp-ca-cert",
+                      file=sys.stderr)
+                return 1
 
         server = RepositoryServer(
             db_path=args.db_path,
             cert_dir=args.cert_dir,
             host=args.host,
-            port=args.port
+            port=args.port,
+            enable_ocsp=args.enable_ocsp,
+            ocsp_responder_cert=args.ocsp_responder_cert,
+            ocsp_responder_key=args.ocsp_responder_key,
+            ocsp_ca_cert=args.ocsp_ca_cert,
+            ocsp_cache_ttl=args.ocsp_cache_ttl
         )
 
         print(f"Starting repository server on {args.host}:{args.port}")
-        print(f"Database: {args.db_path}")
-        print(f"Certificate directory: {args.cert_dir}")
+        if args.enable_ocsp:
+            print(f"OCSP endpoint available at http://{args.host}:{args.port}/ocsp")
         print("Press Ctrl+C to stop")
 
         server.start()
@@ -545,7 +536,7 @@ def cmd_repo_serve(args):
         print("\nServer stopped")
         return 0
     except Exception as e:
-        print(f"Error starting server: {str(e)}", file=sys.stderr)
+        print(f"Error: {str(e)}", file=sys.stderr)
         return 1
 
 def setup_ca_revoke_parser(subparsers):
@@ -812,6 +803,18 @@ def cmd_ocsp_serve(args):
         print(f"Error: {str(e)}", file=sys.stderr)
         return 1
 
+_config = None
+
+def get_config():
+    global _config
+    if _config is None:
+        _config = MicroPKIConfig()
+    return _config
+
+def setup_common_args(parser):
+    parser.add_argument('--config', help='Path to configuration file (YAML or JSON)')
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         prog='micropki',
@@ -823,6 +826,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         '--version',
         action='version',
         version='MicroPKI v0.2.0'
+    )
+
+    parser.add_argument(
+        '--config',
+        help='Path to configuration file'
     )
 
     subparsers = parser.add_subparsers(
@@ -910,6 +918,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     elif args.command == 'ocsp':
         if args.ocsp_command == 'serve':
             return cmd_ocsp_serve(args)
+    elif args.config:
+        global _config
+        _config = MicroPKIConfig(args.config)
     else:
         print(f"Unknown command: {args.command}", file=sys.stderr)
         return 1
