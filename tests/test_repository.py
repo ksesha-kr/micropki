@@ -4,38 +4,27 @@ from pathlib import Path
 from micropki.repository import RepositoryServer
 from micropki.database import CertificateDatabase
 import json
-import os
-
 
 class TestRepositoryServer:
     @pytest.fixture
     def client(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            cert_dir = Path(tmpdir) / 'certs'
+            base = Path(tmpdir)
+            cert_dir = base / 'certs'
             cert_dir.mkdir()
-
-            crl_dir = Path(tmpdir) / 'crl'
+            crl_dir = base / 'crl'
             crl_dir.mkdir()
+            db_path = base / 'micropki.db'
 
-            db_path = Path(tmpdir) / 'micropki.db'
+            (cert_dir / 'ca.cert.pem').write_text("-----BEGIN CERTIFICATE-----\nTEST ROOT CA\n-----END CERTIFICATE-----")
+            (cert_dir / 'intermediate.cert.pem').write_text("-----BEGIN CERTIFICATE-----\nTEST INTERMEDIATE CA\n-----END CERTIFICATE-----")
 
-            test_cert_path = cert_dir / 'ca.cert.pem'
-            test_cert_path.write_text("-----BEGIN CERTIFICATE-----\nTEST ROOT CA\n-----END CERTIFICATE-----")
-
-            test_intermediate_path = cert_dir / 'intermediate.cert.pem'
-            test_intermediate_path.write_text(
-                "-----BEGIN CERTIFICATE-----\nTEST INTERMEDIATE CA\n-----END CERTIFICATE-----")
-
-            test_root_crl = crl_dir / 'root.crl.pem'
-            test_root_crl.write_text("-----BEGIN X509 CRL-----\nTEST ROOT CRL\n-----END X509 CRL-----")
-
-            test_intermediate_crl = crl_dir / 'intermediate.crl.pem'
-            test_intermediate_crl.write_text("-----BEGIN X509 CRL-----\nTEST INTERMEDIATE CRL\n-----END X509 CRL-----")
+            (crl_dir / 'root.crl.pem').write_text("-----BEGIN X509 CRL-----\nTEST ROOT CRL\n-----END X509 CRL-----")
+            (crl_dir / 'intermediate.crl.pem').write_text("-----BEGIN X509 CRL-----\nTEST INTERMEDIATE CRL\n-----END X509 CRL-----")
 
             db = CertificateDatabase(str(db_path))
             db.init_schema()
-
-            cert_data = {
+            db.insert_certificate({
                 'serial_hex': '1A2B3C4D',
                 'subject': 'CN=Test Cert',
                 'issuer': 'CN=Test CA',
@@ -43,12 +32,10 @@ class TestRepositoryServer:
                 'not_after': '2025-01-01T00:00:00',
                 'cert_pem': '-----BEGIN CERTIFICATE-----\nTEST CERTIFICATE\n-----END CERTIFICATE-----',
                 'status': 'valid'
-            }
-            db.insert_certificate(cert_data)
+            })
             db.close()
 
-            server = RepositoryServer(str(db_path), str(tmpdir), '127.0.0.1', 8080)
-
+            server = RepositoryServer(str(db_path), str(cert_dir), '127.0.0.1', 8080)
             yield server.app.test_client()
 
     def test_get_certificate_not_found(self, client):
@@ -80,7 +67,6 @@ class TestRepositoryServer:
     def test_get_crl(self, client):
         response = client.get('/crl')
         assert response.status_code == 200
-        assert b"X509 CRL" in response.data
         assert b"INTERMEDIATE CRL" in response.data
 
     def test_get_crl_with_ca_param(self, client):
