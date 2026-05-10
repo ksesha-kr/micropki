@@ -21,8 +21,8 @@ class TestKeyGeneration:
         assert key.curve.name == 'secp384r1'
 
     def test_generate_rsa_key_invalid_size(self):
-        with pytest.raises(CryptoError, match="Failed to generate RSA key: key_size must be 4096 for RSA"):
-            generate_rsa_key(2048)
+        with pytest.raises(CryptoError, match="key_size must be one of"):
+            generate_rsa_key(1024)
 
 
 class TestKeyEncryption:
