@@ -254,7 +254,6 @@ def setup_repo_serve_parser(subparsers):
     parser.add_argument('--cert-dir', default='./pki/certs', help='Certificate directory')
     parser.add_argument('--log-file', help='Log file path')
 
-    # OCSP integration flags
     parser.add_argument('--enable-ocsp', action='store_true', help='Enable OCSP endpoint')
     parser.add_argument('--ocsp-responder-cert', help='OCSP signing certificate')
     parser.add_argument('--ocsp-responder-key', help='OCSP private key')
@@ -764,6 +763,167 @@ def cmd_ca_issue_ocsp_cert(args):
 
         return 0
 
+    except Exception as e:
+        print(f"Error: {str(e)}", file=sys.stderr)
+        return 1
+
+
+def setup_client_gen_csr_parser(subparsers):
+    parser = subparsers.add_parser('gen-csr', help='Generate private key and CSR')
+    parser.add_argument('--subject', required=True, help='Distinguished Name')
+    parser.add_argument('--key-type', choices=['rsa', 'ecc'], default='rsa', help='Key type')
+    parser.add_argument('--key-size', type=int, default=2048, help='Key size (RSA: 2048/4096, ECC: 256/384)')
+    parser.add_argument('--san', action='append', help='Subject Alternative Name')
+    parser.add_argument('--out-key', default='./key.pem', help='Output private key file')
+    parser.add_argument('--out-csr', default='./request.csr.pem', help='Output CSR file')
+    return parser
+
+
+def setup_client_request_cert_parser(subparsers):
+    parser = subparsers.add_parser('request-cert', help='Submit CSR and get certificate')
+    parser.add_argument('--csr', required=True, help='CSR file path')
+    parser.add_argument('--template', required=True, choices=['server', 'client', 'code_signing'],
+                        help='Certificate template')
+    parser.add_argument('--ca-url', required=True, help='Repository base URL')
+    parser.add_argument('--out-cert', default='./cert.pem', help='Output certificate file')
+    parser.add_argument('--api-key', help='API key for authentication')
+    return parser
+
+
+def setup_client_validate_parser(subparsers):
+    parser = subparsers.add_parser('validate', help='Validate certificate chain')
+    parser.add_argument('--cert', required=True, help='Leaf certificate path')
+    parser.add_argument('--untrusted', action='append', help='Intermediate certificate path')
+    parser.add_argument('--trusted', default='./pki/certs/ca.cert.pem', help='Trusted root certificate')
+    parser.add_argument('--crl', help='CRL file or URL')
+    parser.add_argument('--ocsp', action='store_true', help='Perform OCSP check')
+    parser.add_argument('--validation-time', help='Validation time (ISO 8601)')
+    parser.add_argument('--format', choices=['text', 'json'], default='text', help='Output format')
+    return parser
+
+
+def setup_client_check_status_parser(subparsers):
+    parser = subparsers.add_parser('check-status', help='Check revocation status')
+    parser.add_argument('--cert', required=True, help='Certificate path')
+    parser.add_argument('--ca-cert', required=True, help='Issuer CA certificate')
+    parser.add_argument('--crl', help='CRL file or URL')
+    parser.add_argument('--ocsp-url', help='OCSP responder URL')
+    return parser
+
+
+def cmd_client_gen_csr(args):
+    try:
+        from micropki.client import PKIClient
+        client = PKIClient()
+        result = client.generate_csr(
+            subject_dn=args.subject,
+            key_type=args.key_type,
+            key_size=args.key_size,
+            san_entries=args.san,
+            out_key=args.out_key,
+            out_csr=args.out_csr
+        )
+        print(f"CSR generated successfully!")
+        print(f"Private key: {result['key']}")
+        print(f"CSR: {result['csr']}")
+        print("\nWARNING: Private key is stored unencrypted!")
+        return 0
+    except Exception as e:
+        print(f"Error: {str(e)}", file=sys.stderr)
+        return 1
+
+
+def cmd_client_request_cert(args):
+    try:
+        from micropki.client import PKIClient
+        client = PKIClient()
+        result = client.request_certificate(
+            csr_path=args.csr,
+            template=args.template,
+            ca_url=args.ca_url,
+            out_cert=args.out_cert,
+            api_key=args.api_key
+        )
+        print(f"Certificate issued successfully!")
+        print(f"Certificate: {result['certificate']}")
+        return 0
+    except Exception as e:
+        print(f"Error: {str(e)}", file=sys.stderr)
+        return 1
+
+
+def cmd_client_validate(args):
+    try:
+        from micropki.validation import PathValidator
+        from micropki.revocation_check import RevocationChecker
+        from cryptography import x509
+        from cryptography.hazmat.backends import default_backend
+        import json
+
+        with open(args.cert, 'rb') as f:
+            leaf = x509.load_pem_x509_certificate(f.read(), default_backend())
+
+        intermediates = []
+        if args.untrusted:
+            for path in args.untrusted:
+                with open(path, 'rb') as f:
+                    intermediates.append(x509.load_pem_x509_certificate(f.read(), default_backend()))
+
+        roots = []
+        with open(args.trusted, 'rb') as f:
+            roots.append(x509.load_pem_x509_certificate(f.read(), default_backend()))
+
+        validation_time = None
+        if args.validation_time:
+            validation_time = datetime.fromisoformat(args.validation_time)
+
+        validator = PathValidator(validation_time)
+        result = validator.validate_chain(leaf, intermediates, roots, 'server')
+
+        if args.format == 'json':
+            print(json.dumps(result.to_dict(), indent=2))
+        else:
+            if result.passed:
+                print("Chain validation PASSED")
+            else:
+                print("Chain validation FAILED")
+            print(f"\nChain: {' → '.join([c.subject.rfc4514_string() for c in result.chain])}")
+            for step in result.steps:
+                status = "PASSED" if step['passed'] else "FAILED"
+                print(f"  {status} [{step['step']}] {step.get('message', '')}")
+
+        return 0 if result.passed else 1
+    except Exception as e:
+        print(f"Error: {str(e)}", file=sys.stderr)
+        return 1
+
+
+def cmd_client_check_status(args):
+    try:
+        from micropki.revocation_check import RevocationChecker
+        from cryptography import x509
+        from cryptography.hazmat.backends import default_backend
+
+        with open(args.cert, 'rb') as f:
+            cert = x509.load_pem_x509_certificate(f.read(), default_backend())
+        with open(args.ca_cert, 'rb') as f:
+            ca_cert = x509.load_pem_x509_certificate(f.read(), default_backend())
+
+        checker = RevocationChecker()
+        result = checker.check_status(cert, ca_cert, args.ocsp_url, None, args.crl)
+
+        if result['status'] == 'good':
+            print(f"Certificate is GOOD (checked via {result['method']})")
+        elif result['status'] == 'revoked':
+            print(f"Certificate is REVOKED (checked via {result['method']})")
+            if result['reason']:
+                print(f"   Reason: {result['reason']}")
+            if result['revocation_date']:
+                print(f"   Date: {result['revocation_date']}")
+        else:
+            print(f"Certificate status: UNKNOWN (checked via {result['method']})")
+
+        return 0
     except Exception as e:
         print(f"Error: {str(e)}", file=sys.stderr)
         return 1
