@@ -16,8 +16,9 @@ class CryptoError(Exception):
 
 def generate_rsa_key(key_size: int = 4096) -> rsa.RSAPrivateKey:
     try:
-        if key_size != 4096:
-            raise ValueError("key_size must be 4096 for RSA")
+        allowed_sizes = [2048, 4096]
+        if key_size not in allowed_sizes:
+            raise ValueError(f"key_size must be one of {allowed_sizes} for RSA")
 
         logger.info(f"Starting RSA key generation ({key_size} bits)")
         private_key = rsa.generate_private_key(
