@@ -1,4 +1,7 @@
 import os
+import tempfile
+from cryptography import x509
+from cryptography.hazmat.backends import default_backend
 from pathlib import Path
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -156,6 +159,49 @@ class RepositoryServer:
         @self.app.errorhandler(405)
         def method_not_allowed(e):
             return "Method not allowed", 405
+
+        @self.app.route('/request-cert', methods=['POST'])
+        def request_certificate():
+            try:
+                template = request.args.get('template')
+                if template not in ['server', 'client', 'code_signing']:
+                    return "Invalid template. Must be server, client, or code_signing", 400
+
+                api_key = request.headers.get('X-API-Key')
+                if api_key != 'changeme':
+                    logger.warning(f"Invalid API key from {request.remote_addr}")
+
+                csr_data = request.data
+                csr = x509.load_pem_x509_csr(csr_data, default_backend())
+
+                from micropki.ca import RootCA
+                ca = RootCA(out_dir=str(self.cert_dir.parent), log_file=None)
+
+                with tempfile.NamedTemporaryFile(mode='wb', suffix='.csr') as tmp_csr:
+                    tmp_csr.write(csr_data)
+                    tmp_csr.flush()
+
+                    result = ca.issue_certificate(
+                        ca_cert_path=str(self.cert_dir / 'intermediate.cert.pem'),
+                        ca_key_path=str(self.cert_dir.parent / 'private' / 'intermediate.key.pem'),
+                        ca_passphrase_file=str(self.cert_dir.parent.parent / 'secrets' / 'intermediate.pass'),
+                        template=template,
+                        subject=csr.subject.rfc4514_string(),
+                        csr_path=tmp_csr.name,
+                        out_dir=str(self.cert_dir),
+                        db_path=self.db_path
+                    )
+
+                with open(result['certificate'], 'rb') as f:
+                    cert_pem = f.read()
+
+                logger.info(f"Certificate issued via API for {csr.subject.rfc4514_string()} from {request.remote_addr}")
+
+                return cert_pem, 201, {'Content-Type': 'application/x-pem-file'}
+
+            except Exception as e:
+                logger.error(f"Certificate request failed: {str(e)}")
+                return f"Failed to issue certificate: {str(e)}", 500
 
     def start(self):
         logger.info(f"Starting repository server on {self.host}:{self.port}")
