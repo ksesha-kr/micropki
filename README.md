@@ -285,7 +285,10 @@ micropki/
 │   ├── chain.py        # Валидация цепочек
 │   ├── logger.py      # Настройка логирования
 │   ├── ocsp.py        # Обработка OCSP запросов/ответов
-│   └── ocsp_responder.py   # HTTP сервер для OCSP
+│   ├── ocsp_responder.py   # HTTP сервер для OCSP
+│   ├── validation.py  # path validation engine
+│   ├── revocation_check.py # CRL + OCSP с fallback
+│   └── client.py      # клиентские команды
 ├── tests/             # Модульные тесты
 │ 
 ├── scripts/           # Скрипты для верификации
@@ -380,6 +383,46 @@ micropki ca issue-cert \
     --san dns:example.com \
     --out-dir ./pki/certs \
     --db-path ./pki/micropki.db
+```
+
+### Генерация CSR
+
+```bash
+# Генерация ключа и CSR
+micropki client gen-csr \
+    --subject "CN=app.example.com" \
+    --key-type rsa \
+    --key-size 2048 \
+    --san dns:app.example.com \
+    --out-key ./app.key.pem \
+    --out-csr ./app.csr.pem
+```
+
+## Запрос сертификата
+```
+# Отправка CSR в CA
+micropki client request-cert \
+    --csr ./app.csr.pem \
+    --template server \
+    --ca-url http://localhost:8080 \
+    --out-cert ./app.cert.pem
+```
+
+## Валидация цепочки
+```
+# Проверка цепочки сертификатов
+micropki client validate \
+    --cert ./app.cert.pem \
+    --untrusted ./pki/certs/intermediate.cert.pem \
+    --trusted ./pki/certs/ca.cert.pem
+```
+
+## Проверка статуса отзыва
+```
+# Проверка через OCSP с fallback на CRL
+micropki client check-status \
+    --cert ./app.cert.pem \
+    --ca-cert ./pki/certs/intermediate.cert.pem
 ```
 
 ## Тестирование
