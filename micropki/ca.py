@@ -4,6 +4,10 @@ from typing import Optional, Dict, Any, List
 from datetime import datetime, timezone, timedelta
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
+from micropki.crypto_utils import load_encrypted_private_key
+
+from micropki.crl import REASON_CODES
+from cryptography import x509
 from cryptography.hazmat.backends import default_backend
 
 from micropki.crypto_utils import (
@@ -23,6 +27,26 @@ import logging
 
 from micropki.database import CertificateDatabase, DatabaseError
 from micropki.serial import SerialGenerator
+
+from cryptography import x509
+from cryptography.hazmat.backends import default_backend
+
+def load_certificate_from_file(path: str) -> x509.Certificate:
+    with open(path, 'rb') as f:
+        return x509.load_pem_x509_certificate(f.read(), default_backend())
+
+def get_reason_code(reason_str: str) -> int:
+    if reason_str is None:
+        return 0
+    reason_str_lower = reason_str.lower()
+    for name, code in REASON_CODES.items():
+        if name.lower() == reason_str_lower:
+            return code
+    return 0
+
+def load_certificate(cert_path: str) -> x509.Certificate:
+    with open(cert_path, 'rb') as f:
+        return x509.load_pem_x509_certificate(f.read(), default_backend())
 
 logger = logging.getLogger(__name__)
 
@@ -672,3 +696,56 @@ Path Length Constraint: {pathlen}
         except Exception as e:
             self.logger.error(f"OCSP certificate issuance failed: {str(e)}")
             raise CAError(str(e))
+
+    def compromise_certificate(self, cert_path: str, reason: str, db_path: str, force: bool = False):
+        from micropki.crypto_utils import load_certificate
+        from micropki.database import CertificateDatabase
+        from micropki.audit import get_audit_logger
+        from micropki.compromise import compute_public_key_hash, mark_key_compromised
+        from cryptography import x509
+        from cryptography.hazmat.backends import default_backend
+
+        with open(cert_path, 'rb') as f:
+            cert_data = f.read()
+        cert = x509.load_pem_x509_certificate(cert_data, default_backend())
+
+        serial_hex = hex(cert.serial_number)[2:].upper()
+        pub_key_hash = compute_public_key_hash(cert.public_key())
+
+        db = CertificateDatabase(db_path)
+
+        existing = db.get_certificate_by_serial(serial_hex)
+        if not existing:
+            db.close()
+            raise CAError(f"Certificate {serial_hex} not found")
+
+        if existing['status'] == 'revoked' and not force:
+            response = input(f"Certificate already revoked. Continue? [y/N] ").strip().lower()
+            if response not in ['y', 'yes']:
+                db.close()
+                return {'status': 'cancelled'}
+
+        db.update_certificate_status(serial_hex, 'revoked', reason)
+        db.add_compromised_key(pub_key_hash, serial_hex, reason)
+        db.close()
+
+        audit = get_audit_logger(str(self.out_dir))
+        audit.log(
+            level="AUDIT",
+            operation="compromise_simulation",
+            status="success",
+            message=f"Certificate {serial_hex} marked as compromised",
+            metadata={"serial": serial_hex, "reason": reason}
+        )
+
+        self.generate_crl(
+            ca_type="intermediate",
+            ca_cert_path=str(self.certs_dir / "intermediate.cert.pem"),
+            ca_key_path=str(self.private_dir / "intermediate.key.pem"),
+            ca_passphrase_file=str(self.out_dir.parent / "secrets" / "intermediate.pass"),
+            db_path=db_path,
+            out_dir=str(self.out_dir),
+            next_update_days=7
+        )
+
+        return {'status': 'compromised', 'serial': serial_hex}
