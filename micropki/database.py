@@ -51,6 +51,30 @@ class CertificateDatabase:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_status ON certificates(status)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_issuer ON certificates(issuer)")
 
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS crl_metadata (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ca_subject TEXT NOT NULL UNIQUE,
+                    crl_number INTEGER NOT NULL,
+                    last_generated TEXT NOT NULL,
+                    next_update TEXT NOT NULL,
+                    crl_path TEXT NOT NULL
+                )
+            """)
+
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_ca_subject ON crl_metadata(ca_subject)")
+
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS compromised_keys (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    public_key_hash TEXT UNIQUE NOT NULL,
+                    certificate_serial TEXT NOT NULL,
+                    compromise_date TEXT NOT NULL,
+                    compromise_reason TEXT NOT NULL
+                )
+            """)
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_compromised_hash ON compromised_keys(public_key_hash)")
+
             self.conn.commit()
             logger.info("Database schema initialized successfully")
 
@@ -157,22 +181,16 @@ class CertificateDatabase:
         try:
             cursor = self.conn.cursor()
 
-            update_data = {
-                'status': status,
-                'revocation_reason': revocation_reason
-            }
-
-            if status == 'revoked':
-                update_data['revocation_date'] = datetime.now(timezone.utc).isoformat()
+            revocation_date = datetime.now(timezone.utc).isoformat() if status == 'revoked' else None
 
             cursor.execute("""
                 UPDATE certificates
                 SET status = ?, revocation_reason = ?, revocation_date = ?
                 WHERE serial_hex = ?
             """, (
-                update_data['status'],
-                update_data.get('revocation_reason'),
-                update_data.get('revocation_date'),
+                status,
+                revocation_reason,
+                revocation_date,
                 serial_hex.upper()
             ))
 
@@ -197,54 +215,18 @@ class CertificateDatabase:
             logger.error(f"Failed to retrieve revoked certificates: {str(e)}")
             raise DatabaseError(f"Cannot retrieve revoked certificates: {str(e)}")
 
-    def close(self):
-        if self.conn:
-            self.conn.close()
-            logger.info("Database connection closed")
-
-    def init_schema(self):
+    def get_revoked_certificates_by_issuer(self, issuer_dn: str) -> List[Dict[str, Any]]:
         try:
             cursor = self.conn.cursor()
-
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS certificates (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    serial_hex TEXT UNIQUE NOT NULL,
-                    subject TEXT NOT NULL,
-                    issuer TEXT NOT NULL,
-                    not_before TEXT NOT NULL,
-                    not_after TEXT NOT NULL,
-                    cert_pem TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    revocation_reason TEXT,
-                    revocation_date TEXT,
-                    created_at TEXT NOT NULL
-                )
-            """)
-
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_serial ON certificates(serial_hex)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_status ON certificates(status)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_issuer ON certificates(issuer)")
-
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS crl_metadata (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    ca_subject TEXT NOT NULL UNIQUE,
-                    crl_number INTEGER NOT NULL,
-                    last_generated TEXT NOT NULL,
-                    next_update TEXT NOT NULL,
-                    crl_path TEXT NOT NULL
-                )
-            """)
-
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_ca_subject ON crl_metadata(ca_subject)")
-
-            self.conn.commit()
-            logger.info("Database schema initialized successfully")
-
+            cursor.execute(
+                "SELECT * FROM certificates WHERE issuer = ? AND status = 'revoked' ORDER BY revocation_date DESC",
+                (issuer_dn,)
+            )
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
         except Exception as e:
-            logger.error(f"Failed to initialize schema: {str(e)}")
-            raise DatabaseError(f"Cannot initialize schema: {str(e)}")
+            logger.error(f"Failed to get revoked certificates: {str(e)}")
+            raise DatabaseError(f"Cannot get revoked certificates: {str(e)}")
 
     def get_crl_metadata(self, ca_subject: str) -> Optional[Dict[str, Any]]:
         try:
@@ -284,15 +266,39 @@ class CertificateDatabase:
             logger.error(f"Failed to update CRL metadata: {str(e)}")
             raise DatabaseError(f"Cannot update CRL metadata: {str(e)}")
 
-    def get_revoked_certificates_by_issuer(self, issuer_dn: str) -> List[Dict[str, Any]]:
+    def add_compromised_key(self, public_key_hash: str, serial: str, reason: str):
         try:
             cursor = self.conn.cursor()
-            cursor.execute(
-                "SELECT * FROM certificates WHERE issuer = ? AND status = 'revoked' ORDER BY revocation_date DESC",
-                (issuer_dn,)
-            )
+            cursor.execute("""
+                INSERT OR REPLACE INTO compromised_keys (public_key_hash, certificate_serial, compromise_date, compromise_reason)
+                VALUES (?, ?, ?, ?)
+            """, (public_key_hash, serial, datetime.now(timezone.utc).isoformat(), reason))
+            self.conn.commit()
+            logger.info(f"Added compromised key for serial {serial}")
+        except Exception as e:
+            logger.error(f"Failed to add compromised key: {str(e)}")
+            raise DatabaseError(f"Cannot add compromised key: {str(e)}")
+
+    def is_key_compromised(self, public_key_hash: str) -> bool:
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT 1 FROM compromised_keys WHERE public_key_hash = ?", (public_key_hash,))
+            return cursor.fetchone() is not None
+        except Exception as e:
+            logger.error(f"Failed to check compromised key: {str(e)}")
+            return False
+
+    def get_compromised_keys(self) -> List[Dict[str, Any]]:
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT * FROM compromised_keys ORDER BY compromise_date DESC")
             rows = cursor.fetchall()
             return [dict(row) for row in rows]
         except Exception as e:
-            logger.error(f"Failed to get revoked certificates: {str(e)}")
-            raise DatabaseError(f"Cannot get revoked certificates: {str(e)}")
+            logger.error(f"Failed to get compromised keys: {str(e)}")
+            raise DatabaseError(f"Cannot get compromised keys: {str(e)}")
+
+    def close(self):
+        if self.conn:
+            self.conn.close()
+            logger.info("Database connection closed")
