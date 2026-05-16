@@ -1,10 +1,11 @@
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa, ec, padding
+from cryptography.hazmat.backends import default_backend
+from cryptography.exceptions import InvalidSignature
 import os
 import stat
 from typing import Union, Optional
-from cryptography.hazmat.primitives.asymmetric import rsa, ec
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.backends import default_backend
-from cryptography.hazmat.primitives import hashes
 import logging
 
 logger = logging.getLogger(__name__)
@@ -33,13 +34,17 @@ def generate_rsa_key(key_size: int = 4096) -> rsa.RSAPrivateKey:
         raise CryptoError(f"Failed to generate RSA key: {str(e)}")
 
 
-def generate_ecc_key() -> ec.EllipticCurvePrivateKey:
+def generate_ecc_key(curve_size: int = 384) -> ec.EllipticCurvePrivateKey:
     try:
-        logger.info("Starting ECC key generation (P-384)")
-        private_key = ec.generate_private_key(
-            curve=ec.SECP384R1(),
-            backend=default_backend()
-        )
+        if curve_size == 256:
+            curve = ec.SECP256R1()
+        elif curve_size == 384:
+            curve = ec.SECP384R1()
+        else:
+            raise ValueError(f"ECC curve size must be 256 or 384, got {curve_size}")
+
+        logger.info(f"Starting ECC key generation (P-{curve_size})")
+        private_key = ec.generate_private_key(curve, default_backend())
         logger.info("ECC key generation completed successfully")
         return private_key
     except Exception as e:
@@ -112,3 +117,10 @@ def read_passphrase_from_file(passphrase_file: str) -> bytes:
     except Exception as e:
         logger.error(f"Failed to read passphrase file: {str(e)}")
         raise CryptoError(f"Cannot read passphrase file: {str(e)}")
+
+
+def load_certificate(cert_path: str):
+    from cryptography import x509
+    from cryptography.hazmat.backends import default_backend
+    with open(cert_path, 'rb') as f:
+        return x509.load_pem_x509_certificate(f.read(), default_backend())
