@@ -35,7 +35,7 @@ class TestRepositoryServer:
             })
             db.close()
 
-            server = RepositoryServer(str(db_path), str(cert_dir), '127.0.0.1', 8080)
+            server = RepositoryServer(str(db_path), str(cert_dir), '127.0.0.1', 8080, rate_limit=0, rate_burst=10)
             yield server.app.test_client()
 
     def test_get_certificate_not_found(self, client):
