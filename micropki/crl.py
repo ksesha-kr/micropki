@@ -14,6 +14,46 @@ class CRLError(Exception):
     pass
 
 
+REASON_CODES = {
+    'unspecified': 0,
+    'keycompromise': 1,
+    'cacompromise': 2,
+    'affiliationchanged': 3,
+    'superseded': 4,
+    'cessationofoperation': 5,
+    'certificatehold': 6,
+    'removefromcrl': 8,
+    'privilegewithdrawn': 9,
+    'aacompromise': 10
+}
+
+
+def get_reason_code(reason_str: str) -> int:
+    if reason_str is None:
+        return 0
+    reason_str_lower = reason_str.lower().replace('_', '').replace('-', '')
+
+    mapping = {
+        'keycompromise': 'keycompromise',
+        'cacompromise': 'cacompromise',
+        'affiliationchanged': 'affiliationchanged',
+        'superseded': 'superseded',
+        'cessationofoperation': 'cessationofoperation',
+        'certificatehold': 'certificatehold',
+        'removefromcrl': 'removefromcrl',
+        'privilegewithdrawn': 'privilegewithdrawn',
+        'aacompromise': 'aacompromise',
+        'unspecified': 'unspecified'
+    }
+
+    normalized = mapping.get(reason_str_lower, reason_str_lower)
+
+    for name, code in REASON_CODES.items():
+        if name == normalized:
+            return code
+    return 0
+
+
 def build_revoked_certificate(
         serial_number: int,
         revocation_date: datetime,
@@ -22,6 +62,17 @@ def build_revoked_certificate(
     builder = x509.RevokedCertificateBuilder()
     builder = builder.serial_number(serial_number)
     builder = builder.revocation_date(revocation_date)
+
+    if reason and reason.lower() != 'unspecified':
+        reason_code = get_reason_code(reason)
+        try:
+            from cryptography.x509.extensions import ReasonCode
+            builder = builder.add_extension(ReasonCode(reason_code), critical=False)
+        except ImportError:
+            try:
+                builder = builder.add_extension(x509.ReasonCode(reason_code), critical=False)
+            except AttributeError:
+                pass
 
     return builder.build()
 
