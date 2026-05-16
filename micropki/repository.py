@@ -8,6 +8,7 @@ from flask_cors import CORS
 import logging
 from typing import Optional
 from datetime import datetime
+from micropki.ratelimit import get_rate_limiter
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +24,9 @@ class RepositoryServer:
             ocsp_responder_cert: Optional[str] = None,
             ocsp_responder_key: Optional[str] = None,
             ocsp_ca_cert: Optional[str] = None,
-            ocsp_cache_ttl: int = 60
+            ocsp_cache_ttl: int = 60,
+            rate_limit: float = 0,
+            rate_burst: int = 10
     ):
         self.db_path = db_path
         self.cert_dir = Path(cert_dir)
@@ -35,6 +38,7 @@ class RepositoryServer:
         self.ocsp_ca_cert = ocsp_ca_cert
         self.ocsp_cache_ttl = ocsp_cache_ttl
         self.ocsp_handler = None
+        self.rate_limiter = get_rate_limiter(rate_limit, rate_burst)
 
         self.app = Flask('micropki-repo')
         CORS(self.app, resources={r"/*": {"origins": "*"}})
@@ -202,6 +206,14 @@ class RepositoryServer:
             except Exception as e:
                 logger.error(f"Certificate request failed: {str(e)}")
                 return f"Failed to issue certificate: {str(e)}", 500
+
+        @self.app.before_request
+        def check_rate_limit():
+            if self.rate_limiter.rate > 0:
+                client_ip = request.remote_addr
+                allowed, retry_after = self.rate_limiter.is_allowed(client_ip)
+                if not allowed:
+                    return "Rate limit exceeded. Try again later.", 429, {'Retry-After': str(retry_after)}
 
     def start(self):
         logger.info(f"Starting repository server on {self.host}:{self.port}")
