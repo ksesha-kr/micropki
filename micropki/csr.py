@@ -5,6 +5,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa, ec, padding
 from cryptography.hazmat.backends import default_backend
 from datetime import datetime, timedelta, timezone
 from typing import Union, Optional, List
+from micropki.policy import PolicyEnforcer, PolicyViolation
 import logging
 
 logger = logging.getLogger(__name__)
@@ -62,6 +63,40 @@ def sign_csr(
 ) -> x509.Certificate:
     try:
         logger.info("Starting CSR signing")
+
+        try:
+            enforcer = PolicyEnforcer()
+
+            key = csr.public_key()
+            if hasattr(key, 'key_size'):
+                key_size = key.key_size
+                key_type_from_key = 'rsa'
+            else:
+                key_size = key.curve.key_size
+                key_type_from_key = 'ecc'
+
+            if not is_ca:
+                enforcer.check_key_size(key_size, key_type_from_key, 'end_entity')
+
+            if not is_ca:
+                enforcer.check_validity(validity_days, 'end_entity')
+            elif is_ca:
+                enforcer.check_validity(validity_days, 'intermediate')
+
+            if san_entries and not is_ca:
+                enforcer.check_san_types(san_entries, template_name)
+
+            if not is_ca:
+                for ext in csr.extensions:
+                    if ext.oid == x509.oid.ExtensionOID.BASIC_CONSTRAINTS:
+                        if ext.value.ca:
+                            raise PolicyViolation("CSR with CA=true not allowed for end-entity certificate")
+
+            logger.info("Policy validation passed for CSR")
+
+        except PolicyViolation as e:
+            logger.error(f"Policy violation: {str(e)}")
+            raise CSRError(f"Policy violation: {str(e)}")
 
         from micropki.certificates import generate_serial_number, compute_ski
         from micropki.templates import get_template_extensions
