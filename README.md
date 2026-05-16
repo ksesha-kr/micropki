@@ -288,7 +288,11 @@ micropki/
 │   ├── ocsp_responder.py   # HTTP сервер для OCSP
 │   ├── validation.py  # path validation engine
 │   ├── revocation_check.py # CRL + OCSP с fallback
-│   └── client.py      # клиентские команды
+│   ├── client.py      # клиентские команды
+│   ├── audit.py       # аудит с hash chain
+│   ├── policy.py      # политики безопасности
+│   ├── ratelimit.py      # token bucket
+│   └── compromise.py     # управление компрометацией
 ├── tests/             # Модульные тесты
 │ 
 ├── scripts/           # Скрипты для верификации
@@ -423,6 +427,72 @@ micropki client validate \
 micropki client check-status \
     --cert ./app.cert.pem \
     --ca-cert ./pki/certs/intermediate.cert.pem
+```
+
+### Просмотр аудит-логов
+```
+# Поиск событий за последние 24 часа
+micropki audit query \
+    --from $(date -u -v-1d +%Y-%m-%dT%H:%M:%SZ) \
+    --operation issue \
+    --format table
+
+# Фильтрация по уровню и операции
+micropki audit query --level AUDIT --operation revocation
+
+# Вывод в JSON формате
+micropki audit query --format json --serial 1A2B3C4D
+
+# Вывод в CSV формате
+micropki audit query --format csv --from "2026-01-01T00:00:00Z"
+```
+
+### Проверка целостности аудит-лога
+```
+# Полная проверка хеш-цепочки
+micropki audit verify
+
+# Проверка с указанием путей
+micropki audit verify --log-file ./pki/audit/audit.log --chain-file ./pki/audit/chain.dat
+```
+
+### Симуляция компрометации ключа
+```
+# Пометить сертификат как скомпрометированный
+micropki ca compromise --cert ./pki/certs/example.com.cert.pem
+
+# С указанием причины
+micropki ca compromise --cert ./pki/certs/example.com.cert.pem --reason keyCompromise --force
+```
+
+### Rate Limiting для HTTP серверов
+```
+# Запуск репозитория с лимитом 5 запросов/сек, burst 10
+micropki repo serve \
+    --host 0.0.0.0 \
+    --port 8080 \
+    --rate-limit 5 \
+    --rate-burst 10
+
+# Запуск OCSP responder с rate limiting
+micropki ocsp serve \
+    --rate-limit 10 \
+    --rate-burst 20
+```
+
+### Мониторинг безопасности
+```
+# Просмотр всех AUDIT событий
+micropki audit query --level AUDIT --format table
+
+# Поиск отказов в выдаче (политики)
+micropki audit query --operation issue_certificate --status failure
+
+# Проверка CT лога
+micropki audit ct-verify --serial 1A2B3C4D
+
+# Полная проверка целостности
+micropki audit verify
 ```
 
 ## Тестирование
