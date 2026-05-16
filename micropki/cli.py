@@ -7,6 +7,7 @@ from micropki.ca import RootCA, CAError
 from micropki.chain import verify_chain, get_chain_info
 from micropki.config import MicroPKIConfig, ConfigError
 import logging
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -963,6 +964,130 @@ def cmd_ocsp_serve(args):
         print(f"Error: {str(e)}", file=sys.stderr)
         return 1
 
+
+def setup_audit_query_parser(subparsers):
+    parser = subparsers.add_parser('query', help='Query audit logs')
+    parser.add_argument('--from', dest='from_time', help='Start timestamp (ISO 8601)')
+    parser.add_argument('--to', dest='to_time', help='End timestamp (ISO 8601)')
+    parser.add_argument('--level', choices=['INFO', 'WARNING', 'ERROR', 'AUDIT'], help='Log level')
+    parser.add_argument('--operation', help='Operation type')
+    parser.add_argument('--serial', help='Certificate serial')
+    parser.add_argument('--format', choices=['table', 'json', 'csv'], default='table')
+    parser.add_argument('--verify', action='store_true', help='Verify integrity')
+    parser.add_argument('--out-dir', default='./pki', help='PKI output directory')
+    return parser
+
+
+def setup_audit_verify_parser(subparsers):
+    parser = subparsers.add_parser('verify', help='Verify audit log integrity')
+    parser.add_argument('--log-file', help='Path to audit log file')
+    parser.add_argument('--chain-file', help='Path to chain file')
+    parser.add_argument('--out-dir', default='./pki', help='PKI output directory')
+    return parser
+
+
+def setup_audit_ct_verify_parser(subparsers):
+    parser = subparsers.add_parser('ct-verify', help='Verify certificate in CT log')
+    parser.add_argument('--serial', required=True, help='Certificate serial number')
+    parser.add_argument('--out-dir', default='./pki', help='PKI output directory')
+    return parser
+
+
+def setup_ca_compromise_parser(subparsers):
+    parser = subparsers.add_parser('compromise', help='Simulate private key compromise')
+    parser.add_argument('--cert', required=True, help='Path to certificate')
+    parser.add_argument('--reason', default='keyCompromise', help='Revocation reason')
+    parser.add_argument('--force', action='store_true', help='Skip confirmation')
+    parser.add_argument('--db-path', default='./pki/micropki.db', help='Database path')
+    parser.add_argument('--out-dir', default='./pki', help='PKI output directory')
+    return parser
+
+
+def cmd_audit_query(args):
+    from micropki.audit import get_audit_logger
+    import json
+    import csv
+    import sys
+
+    audit = get_audit_logger(args.out_dir)
+    results = audit.query(
+        from_time=getattr(args, 'from_time', None),
+        to_time=args.to_time,
+        level=args.level,
+        operation=args.operation,
+        serial=args.serial
+    )
+
+    if args.format == 'json':
+        print(json.dumps(results, indent=2))
+    elif args.format == 'csv':
+        if results:
+            writer = csv.DictWriter(sys.stdout, fieldnames=results[0].keys())
+            writer.writeheader()
+            writer.writerows(results)
+    else:
+        print(f"{'Timestamp':<30} {'Level':<8} {'Operation':<20} {'Status':<10} {'Message'}")
+        print("-" * 80)
+        for entry in results:
+            print(
+                f"{entry['timestamp']:<30} {entry['level']:<8} {entry['operation']:<20} {entry['status']:<10} {entry['message'][:50]}")
+
+    if args.verify:
+        passed, idx = audit.verify()
+        if not passed:
+            print(f"\n❌ Integrity check FAILED at entry {idx}", file=sys.stderr)
+            return 1
+        print("\n✅ Integrity check PASSED")
+    return 0
+
+
+def cmd_audit_verify(args):
+    from micropki.audit import get_audit_logger
+
+    audit = get_audit_logger(args.out_dir)
+    passed, idx = audit.verify()
+
+    if passed:
+        print("✅ Audit log integrity verification PASSED")
+        return 0
+    else:
+        print(f"❌ Audit log integrity verification FAILED at entry {idx}", file=sys.stderr)
+        return 1
+
+
+def cmd_audit_ct_verify(args):
+    from micropki.audit import get_audit_logger
+
+    audit = get_audit_logger(args.out_dir)
+    if audit.ct_verify(args.serial):
+        print(f"✅ Certificate {args.serial} found in CT log")
+        return 0
+    else:
+        print(f"❌ Certificate {args.serial} NOT found in CT log", file=sys.stderr)
+        return 1
+
+
+def cmd_ca_compromise(args):
+    from micropki.ca import RootCA
+
+    ca = RootCA(out_dir=args.out_dir)
+    result = ca.compromise_certificate(
+        cert_path=args.cert,
+        reason=args.reason,
+        db_path=args.db_path,
+        force=args.force
+    )
+
+    if result['status'] == 'cancelled':
+        print("Operation cancelled")
+        return 0
+    elif result['status'] == 'compromised':
+        print(f"✅ Certificate {result['serial']} marked as compromised and revoked")
+        return 0
+    else:
+        print(f"❌ Operation failed", file=sys.stderr)
+        return 1
+
 _config = None
 
 def get_config():
@@ -973,6 +1098,8 @@ def get_config():
 
 def setup_common_args(parser):
     parser.add_argument('--config', help='Path to configuration file (YAML or JSON)')
+
+
 
 
 def main(argv: Optional[List[str]] = None) -> int:
