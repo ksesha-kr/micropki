@@ -3,6 +3,9 @@ import sys
 import os
 from pathlib import Path
 from typing import Optional, List
+
+from micropki import serial
+from micropki.audit import get_audit_logger
 from micropki.ca import RootCA, CAError
 from micropki.chain import verify_chain, get_chain_info
 from micropki.config import MicroPKIConfig, ConfigError
@@ -1035,9 +1038,9 @@ def cmd_audit_query(args):
     if args.verify:
         passed, idx = audit.verify()
         if not passed:
-            print(f"\n❌ Integrity check FAILED at entry {idx}", file=sys.stderr)
+            print(f"\nIntegrity check FAILED at entry {idx}", file=sys.stderr)
             return 1
-        print("\n✅ Integrity check PASSED")
+        print("\nIntegrity check PASSED")
     return 0
 
 
@@ -1048,10 +1051,10 @@ def cmd_audit_verify(args):
     passed, idx = audit.verify()
 
     if passed:
-        print("✅ Audit log integrity verification PASSED")
+        print("Audit log integrity verification PASSED")
         return 0
     else:
-        print(f"❌ Audit log integrity verification FAILED at entry {idx}", file=sys.stderr)
+        print(f"Audit log integrity verification FAILED at entry {idx}", file=sys.stderr)
         return 1
 
 
@@ -1060,15 +1063,18 @@ def cmd_audit_ct_verify(args):
 
     audit = get_audit_logger(args.out_dir)
     if audit.ct_verify(args.serial):
-        print(f"✅ Certificate {args.serial} found in CT log")
+        print(f"Certificate {args.serial} found in CT log")
         return 0
     else:
-        print(f"❌ Certificate {args.serial} NOT found in CT log", file=sys.stderr)
+        print(f"Certificate {args.serial} NOT found in CT log", file=sys.stderr)
         return 1
 
 
 def cmd_ca_compromise(args):
     from micropki.ca import RootCA
+
+    audit = get_audit_logger(args.out_dir)
+    audit.log("AUDIT", "config_change", "started", f"Configuration change via compromise command", {"cert": args.cert})
 
     ca = RootCA(out_dir=args.out_dir)
     result = ca.compromise_certificate(
@@ -1078,14 +1084,16 @@ def cmd_ca_compromise(args):
         force=args.force
     )
 
+    audit.log("AUDIT", "config_change", "success", f"Certificate {serial} marked as compromised", {"serial": serial})
+
     if result['status'] == 'cancelled':
         print("Operation cancelled")
         return 0
     elif result['status'] == 'compromised':
-        print(f"✅ Certificate {result['serial']} marked as compromised and revoked")
+        print(f"Certificate {result['serial']} marked as compromised and revoked")
         return 0
     else:
-        print(f"❌ Operation failed", file=sys.stderr)
+        print(f"Operation failed", file=sys.stderr)
         return 1
 
 _config = None
