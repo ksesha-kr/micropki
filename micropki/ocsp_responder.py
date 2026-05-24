@@ -8,11 +8,14 @@ from typing import Optional, Dict, Any, List, Tuple
 import time
 import logging
 from pathlib import Path
+from micropki.audit import get_audit_logger
 
 logger = logging.getLogger(__name__)
 
+
 class OCSPError(Exception):
     pass
+
 
 class OCSPHandler:
 
@@ -174,6 +177,7 @@ class OCSPResponder:
             cache_ttl: int = 60,
             log_file: Optional[str] = None
     ):
+        self.db_path = db_path
         self.host = host
         self.port = port
         self.handler = OCSPHandler(db_path, responder_cert_path, responder_key_path, ca_cert_path, cache_ttl)
@@ -194,5 +198,34 @@ class OCSPResponder:
             return {"status": "ok", "service": "ocsp", "timestamp": datetime.now().isoformat()}, 200
 
     def start(self):
+        audit = get_audit_logger(str(Path(self.db_path).parent))
+
+        audit.log(
+            level="AUDIT",
+            operation="ocsp_startup",
+            status="started",
+            message=f"Starting OCSP responder on {self.host}:{self.port}",
+            metadata={"host": self.host, "port": self.port}
+        )
+
         logger.info(f"Starting OCSP responder on {self.host}:{self.port}")
-        self.app.run(host=self.host, port=self.port, threaded=True)
+
+        try:
+            self.app.run(host=self.host, port=self.port, threaded=True)
+        except Exception as e:
+            audit.log(
+                level="AUDIT",
+                operation="ocsp_startup",
+                status="failure",
+                message=f"OCSP responder failed to start: {str(e)}",
+                metadata={"host": self.host, "port": self.port}
+            )
+            raise
+        finally:
+            audit.log(
+                level="AUDIT",
+                operation="ocsp_shutdown",
+                status="success",
+                message=f"OCSP responder stopped",
+                metadata={"host": self.host, "port": self.port}
+            )
