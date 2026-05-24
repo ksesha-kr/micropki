@@ -27,6 +27,7 @@ import logging
 
 from micropki.database import CertificateDatabase, DatabaseError
 from micropki.serial import SerialGenerator
+from micropki.audit import get_audit_logger
 
 from cryptography import x509
 from cryptography.hazmat.backends import default_backend
@@ -207,7 +208,18 @@ Path Length Constraint: {pathlen}
             validity_days: int,
             db_path: Optional[str] = None
     ) -> Dict[str, str]:
+        from micropki.policy import PolicyEnforcer, PolicyViolation
+        from micropki.audit import get_audit_logger
+
+        audit = get_audit_logger(str(self.out_dir))
+        audit.log("AUDIT", "ca_init", "started", f"Initializing Root CA with subject {subject}",
+                  {"subject": subject, "key_type": key_type, "key_size": key_size})
+
         try:
+            enforcer = PolicyEnforcer()
+            enforcer.check_key_size(key_size, key_type, 'root')
+            enforcer.check_validity(validity_days, 'root')
+
             self.logger.info("Starting Root CA initialization")
 
             self.config.update({
@@ -259,6 +271,15 @@ Path Length Constraint: {pathlen}
 
             self.logger.info("Root CA initialization completed successfully")
 
+            audit.log("AUDIT", "ca_init", "success",
+                      f"Root CA initialized with serial {hex(certificate.serial_number)}", {
+                          "subject": subject,
+                          "serial": hex(certificate.serial_number),
+                          "key_type": key_type,
+                          "key_size": key_size,
+                          "validity_days": validity_days
+                      })
+
             return {
                 'private_key': str(key_path),
                 'certificate': str(cert_path),
@@ -266,10 +287,32 @@ Path Length Constraint: {pathlen}
                 'out_dir': str(self.out_dir)
             }
 
+        except PolicyViolation as e:
+            audit.log("AUDIT", "ca_init", "failure", f"Policy violation: {str(e)}", {
+                "subject": subject,
+                "key_type": key_type,
+                "key_size": key_size,
+                "validity_days": validity_days,
+                "error": str(e)
+            })
+            self.logger.error(f"Policy violation: {str(e)}")
+            raise CAError(str(e))
+
         except (CryptoError, CertificateError) as e:
+            audit.log("AUDIT", "ca_init", "failure", str(e), {
+                "subject": subject,
+                "key_type": key_type,
+                "key_size": key_size,
+                "error": str(e)
+            })
             self.logger.error(f"CA initialization failed: {str(e)}")
             raise CAError(str(e))
+
         except Exception as e:
+            audit.log("AUDIT", "ca_init", "failure", f"Unexpected error: {str(e)}", {
+                "subject": subject,
+                "error": str(e)
+            })
             self.logger.error(f"Unexpected error during CA initialization: {str(e)}")
             raise CAError(f"CA initialization failed: {str(e)}")
 
@@ -286,8 +329,28 @@ Path Length Constraint: {pathlen}
             pathlen: int = 0,
             db_path: Optional[str] = None
     ) -> Dict[str, str]:
+        from micropki.policy import PolicyEnforcer, PolicyViolation
+        from micropki.audit import get_audit_logger
+        from micropki.crypto_utils import read_passphrase_from_file, load_encrypted_private_key
+        from micropki.crypto_utils import generate_rsa_key, generate_ecc_key, encrypt_private_key
+        from micropki.csr import generate_csr, save_csr, sign_csr
+        from cryptography import x509
+        from cryptography.hazmat.backends import default_backend
+        from cryptography.hazmat.primitives import serialization
+        import hashlib
+
+        audit = get_audit_logger(str(self.out_dir))
+        audit.log("AUDIT", "issue_intermediate", "started", f"Creating Intermediate CA with subject {subject}",
+                  {"subject": subject})
+
         try:
             self.logger.info("Starting Intermediate CA issuance")
+            enforcer = PolicyEnforcer()
+            enforcer.check_key_size(key_size, key_type, 'intermediate')
+            enforcer.check_validity(validity_days, 'intermediate')
+
+            if pathlen != 0:
+                raise PolicyViolation(f"Intermediate CA pathLenConstraint must be 0, got {pathlen}")
 
             root_passphrase = read_passphrase_from_file(root_passphrase_file)
             root_key = load_encrypted_private_key(root_key_path, root_passphrase)
@@ -350,7 +413,22 @@ Path Length Constraint: {pathlen}
             if db_path:
                 self._store_certificate_in_db(intermediate_cert, db_path)
 
+                audit = get_audit_logger(str(self.out_dir))
+                fingerprint = hashlib.sha256(
+                    intermediate_cert.public_bytes(serialization.Encoding.DER)
+                ).hexdigest()
+                audit.ct_log(
+                    serial=hex(intermediate_cert.serial_number)[2:].upper(),
+                    subject=intermediate_cert.subject.rfc4514_string(),
+                    fingerprint=fingerprint,
+                    issuer=intermediate_cert.issuer.rfc4514_string()
+                )
+
             self.logger.info("Intermediate CA issued successfully")
+
+            audit.log("AUDIT", "issue_intermediate", "success",
+                      f"Intermediate CA issued with serial {hex(intermediate_cert.serial_number)[2:].upper()}",
+                      {"serial": hex(intermediate_cert.serial_number)[2:].upper(), "subject": subject})
 
             return {
                 'private_key': str(key_path),
@@ -358,7 +436,13 @@ Path Length Constraint: {pathlen}
                 'csr': str(csr_path)
             }
 
+        except PolicyViolation as e:
+            audit.log("AUDIT", "issue_intermediate", "failure", str(e),
+                      {"subject": subject, "policy_violation": str(e)})
+            self.logger.error(f"Policy violation: {str(e)}")
+            raise CAError(str(e))
         except Exception as e:
+            audit.log("AUDIT", "issue_intermediate", "failure", str(e), {"subject": subject})
             self.logger.error(f"Intermediate CA issuance failed: {str(e)}")
             raise CAError(str(e))
 
@@ -375,11 +459,24 @@ Path Length Constraint: {pathlen}
             csr_path: Optional[str] = None,
             db_path: Optional[str] = None
     ) -> Dict[str, str]:
+        from micropki.policy import PolicyEnforcer, PolicyViolation
+        from micropki.audit import get_audit_logger
+        from micropki.compromise import get_public_key_from_cert, get_public_key_from_csr, is_key_compromised
+        from micropki.database import CertificateDatabase
+
+        audit = get_audit_logger(str(self.out_dir))
+        audit.log("AUDIT", "issue_certificate", "started",
+                  f"Issuing {template} certificate for {subject}",
+                  {"template": template, "subject": subject, "san_entries": san_entries})
 
         try:
+            enforcer = PolicyEnforcer()
+            enforcer.check_validity(validity_days, 'end_entity')
+
             self.logger.info(f"Starting certificate issuance with template: {template}")
 
             if san_entries:
+                enforcer.check_san_types(san_entries, template)
                 validate_san_types(template, san_entries)
 
             ca_passphrase = read_passphrase_from_file(ca_passphrase_file)
@@ -394,10 +491,25 @@ Path Length Constraint: {pathlen}
             out_path = Path(out_dir)
             out_path.mkdir(parents=True, exist_ok=True)
 
+            if db_path:
+                db = CertificateDatabase(db_path)
+            else:
+                db = None
+
             if csr_path:
+                if db:
+                    pub_key_hash = get_public_key_from_csr(csr_path)
+                    if db.is_key_compromised(pub_key_hash):
+                        audit.log("AUDIT", "issue_certificate", "failure",
+                                  "Rejected: compromised key in CSR",
+                                  {"template": template, "subject": subject, "csr": csr_path})
+                        raise CAError("Rejected: This private key has been compromised")
+
                 csr = load_csr(csr_path)
                 if not verify_csr_signature(csr):
                     raise CAError("CSR signature verification failed")
+
+                enforcer.check_csr(csr, template)
 
                 for ext in csr.extensions:
                     if ext.oid == x509.oid.ExtensionOID.BASIC_CONSTRAINTS:
@@ -423,9 +535,25 @@ Path Length Constraint: {pathlen}
                 if db_path:
                     self._store_certificate_in_db(cert, db_path)
 
+                import hashlib
+                audit.ct_log(
+                    serial=hex(cert.serial_number)[2:].upper(),
+                    subject=cert.subject.rfc4514_string(),
+                    fingerprint=hashlib.sha256(cert.public_bytes(serialization.Encoding.DER)).hexdigest(),
+                    issuer=cert.issuer.rfc4514_string()
+                )
+                audit.log("AUDIT", "issue_certificate", "success",
+                          f"Certificate issued with serial {hex(cert.serial_number)}",
+                          {"serial": hex(cert.serial_number), "template": template, "subject": subject})
+
+                if db:
+                    db.close()
+
                 return {'certificate': str(cert_path)}
 
             else:
+                enforcer.check_key_size(2048, 'rsa', 'end_entity')
+
                 private_key, actual_key_type = generate_key_pair_for_entity('rsa', 2048)
 
                 csr = generate_csr(subject, private_key, actual_key_type, is_ca=False)
@@ -471,21 +599,51 @@ Path Length Constraint: {pathlen}
                 if db_path:
                     self._store_certificate_in_db(cert, db_path)
 
+                import hashlib
+                audit.ct_log(
+                    serial=hex(cert.serial_number)[2:].upper(),
+                    subject=cert.subject.rfc4514_string(),
+                    fingerprint=hashlib.sha256(cert.public_bytes(serialization.Encoding.DER)).hexdigest(),
+                    issuer=cert.issuer.rfc4514_string()
+                )
+                audit.log("AUDIT", "issue_certificate", "success",
+                          f"Certificate issued with serial {hex(cert.serial_number)}",
+                          {"serial": hex(cert.serial_number), "template": template, "subject": subject})
+
+                if db:
+                    db.close()
+
                 return {
                     'certificate': str(cert_path),
                     'private_key': str(key_path)
                 }
 
+        except PolicyViolation as e:
+            audit.log("AUDIT", "issue_certificate", "failure", f"Policy violation: {str(e)}",
+                      {"template": template, "subject": subject, "error": str(e)})
+            self.logger.error(f"Policy violation: {str(e)}")
+            raise CAError(str(e))
+
         except TemplateError as e:
+            audit.log("AUDIT", "issue_certificate", "failure", f"Template validation failed: {str(e)}",
+                      {"template": template, "subject": subject, "error": str(e)})
             self.logger.error(f"Template validation failed: {str(e)}")
             raise CAError(str(e))
+
         except Exception as e:
+            audit.log("AUDIT", "issue_certificate", "failure", f"Unexpected error: {str(e)}",
+                      {"template": template, "subject": subject, "error": str(e)})
             self.logger.error(f"Certificate issuance failed: {str(e)}")
             raise CAError(str(e))
 
-    def _store_certificate_in_db(self, cert: x509.Certificate, db_path: str):
+    def _store_certificate_in_db(out_dir: str, cert: x509.Certificate, db_path: str):
         try:
             from micropki.certificates import certificate_to_pem
+            from micropki.database import CertificateDatabase
+            from micropki.audit import get_audit_logger
+            import hashlib
+            from cryptography.hazmat.primitives import serialization
+
             db = CertificateDatabase(db_path)
 
             cert_data = {
@@ -500,22 +658,47 @@ Path Length Constraint: {pathlen}
 
             db.insert_certificate(cert_data)
             db.close()
-            self.logger.info(f"Certificate stored in database with serial {cert_data['serial_hex']}")
+            logger.info(f"Certificate stored in database with serial {cert_data['serial_hex']}")
+
+            try:
+                audit = get_audit_logger(out_dir)
+                cert_der = cert.public_bytes(serialization.Encoding.DER)
+                fingerprint = hashlib.sha256(cert_der).hexdigest()
+                audit.ct_log(
+                    serial=cert_data['serial_hex'],
+                    subject=cert_data['subject'],
+                    fingerprint=fingerprint,
+                    issuer=cert_data['issuer']
+                )
+                logger.info(f"Certificate added to CT log with fingerprint {fingerprint[:16]}...")
+            except Exception as ct_error:
+                logger.warning(f"Failed to add certificate to CT log: {str(ct_error)}")
 
         except DatabaseError as e:
-            self.logger.error(f"Database insertion failed: {str(e)}")
+            logger.error(f"Database insertion failed: {str(e)}")
             raise CAError(f"Failed to store certificate in database: {str(e)}")
 
     def revoke_certificate(self, serial_hex: str, reason: str, db_path: str, force: bool = False) -> Dict[str, Any]:
         from micropki.database import CertificateDatabase
         from micropki.revocation import revoke_certificate as revoke
+        from micropki.audit import get_audit_logger
+
+        audit = get_audit_logger(str(self.out_dir))
+
+        audit.log("AUDIT", "revocation", "started", f"Revoking certificate {serial_hex}",
+                  {"serial": serial_hex, "reason": reason})
 
         try:
             db = CertificateDatabase(db_path)
             result = revoke(db, serial_hex, reason, force)
             db.close()
+
+            audit.log("AUDIT", "revocation", "success", f"Certificate {serial_hex} revoked",
+                      {"serial": serial_hex, "reason": reason})
             return result
+
         except Exception as e:
+            audit.log("AUDIT", "revocation", "failure", str(e), {"serial": serial_hex})
             self.logger.error(f"Revocation failed: {str(e)}")
             raise CAError(str(e))
 
@@ -532,10 +715,15 @@ Path Length Constraint: {pathlen}
     ) -> Dict[str, Any]:
         from micropki.database import CertificateDatabase
         from micropki.crypto_utils import load_encrypted_private_key, read_passphrase_from_file
-        from micropki.crl import generate_crl, save_crl, get_reason_code
+        from micropki.crl import generate_crl, save_crl
+        from micropki.audit import get_audit_logger
         from cryptography import x509
         from cryptography.hazmat.backends import default_backend
+        from datetime import datetime, timedelta, timezone
         from pathlib import Path
+
+        audit = get_audit_logger(out_dir)
+        audit.log("AUDIT", "crl_generation", "started", f"Generating CRL for {ca_type} CA", {"ca_type": ca_type})
 
         try:
             self.logger.info(f"Generating CRL for {ca_type} CA")
@@ -572,16 +760,25 @@ Path Length Constraint: {pathlen}
 
             save_crl(crl, str(crl_path))
 
+            next_update = (datetime.now(timezone.utc) + timedelta(days=next_update_days)).isoformat()
+
             db.update_crl_metadata(
                 ca_subject=ca_cert.subject.rfc4514_string(),
                 crl_number=crl_number,
-                next_update=(datetime.now(timezone.utc) + timedelta(days=next_update_days)).isoformat(),
+                next_update=next_update,
                 crl_path=str(crl_path)
             )
 
             db.close()
 
             self.logger.info(f"CRL generated successfully for {ca_type} CA")
+
+            audit.log(
+                "AUDIT", "crl_generation", "success",
+                f"CRL generated for {ca_type} CA: number {crl_number}, {len(revoked_certs)} revoked certs",
+                {"ca_type": ca_type, "crl_number": crl_number, "revoked_count": len(revoked_certs),
+                 "next_update": next_update}
+            )
 
             return {
                 'crl_path': str(crl_path),
@@ -592,6 +789,7 @@ Path Length Constraint: {pathlen}
 
         except Exception as e:
             self.logger.error(f"CRL generation failed: {str(e)}")
+            audit.log("AUDIT", "crl_generation", "failure", str(e), {"ca_type": ca_type})
             raise CAError(str(e))
 
     def check_revoked(self, serial_hex: str, db_path: str) -> Dict[str, Any]:
