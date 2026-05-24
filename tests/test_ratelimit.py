@@ -50,13 +50,23 @@ def test_repository_with_rate_limiting():
         db.init_schema()
         db.close()
 
+        audit_dir = Path(tmpdir) / 'pki' / 'audit'
+        audit_dir.mkdir(parents=True, exist_ok=True)
+
         import socket
         sock = socket.socket()
         sock.bind(('', 0))
         free_port = sock.getsockname()[1]
         sock.close()
 
-        server = RepositoryServer(str(db_path), str(cert_dir), '127.0.0.1', free_port, rate_limit=0, rate_burst=10)
+        server = RepositoryServer(
+            str(db_path),
+            str(cert_dir),
+            '127.0.0.1',
+            free_port,
+            rate_limit=0,
+            rate_burst=10
+        )
 
         def run_server():
             server.start()
