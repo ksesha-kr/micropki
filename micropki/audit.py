@@ -74,6 +74,8 @@ class AuditLogger:
         return entry
 
     def log(self, level: str, operation: str, status: str, message: str, metadata: Dict[str, Any] = None):
+        self.audit_dir.mkdir(parents=True, exist_ok=True)
+
         entry = self._create_entry(level, operation, status, message, metadata or {})
         with self._lock:
             with open(self.log_file, 'a') as f:
@@ -81,8 +83,9 @@ class AuditLogger:
             self._update_chain(entry['integrity']['hash'])
         logger.info(f"AUDIT: {operation} - {status}")
 
-    def query(self, from_time: Optional[str] = None, to_time: Optional[str] = None, level: Optional[str] = None,
-              operation: Optional[str] = None, serial: Optional[str] = None) -> List[Dict[str, Any]]:
+    def query(self, from_time: Optional[str] = None, to_time: Optional[str] = None,
+              level: Optional[str] = None, operation: Optional[str] = None,
+              serial: Optional[str] = None) -> List[Dict[str, Any]]:
         results = []
         if not self.log_file.exists():
             return results
@@ -138,6 +141,7 @@ class AuditLogger:
         return True, None
 
     def ct_log(self, serial: str, subject: str, fingerprint: str, issuer: str):
+        self.audit_dir.mkdir(parents=True, exist_ok=True)
         with self._lock:
             with open(self.ct_file, 'a') as f:
                 f.write(f"{datetime.now(timezone.utc).isoformat()} | {serial} | {subject} | {fingerprint} | {issuer}\n")
