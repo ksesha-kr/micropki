@@ -9,6 +9,7 @@ import logging
 from typing import Optional
 from datetime import datetime
 from micropki.ratelimit import get_rate_limiter
+from micropki.audit import get_audit_logger
 
 logger = logging.getLogger(__name__)
 
@@ -216,7 +217,10 @@ class RepositoryServer:
                     return "Rate limit exceeded. Try again later.", 429, {'Retry-After': str(retry_after)}
 
     def start(self):
-        logger.info(f"Starting repository server on {self.host}:{self.port}")
-        if self.enable_ocsp:
-            logger.info(f"OCSP endpoint available at http://{self.host}:{self.port}/ocsp")
-        self.app.run(host=self.host, port=self.port, threaded=True)
+        audit = get_audit_logger(str(Path(self.db_path).parent))
+        audit.log("AUDIT", "repository_startup", "success", f"Repository server started on {self.host}:{self.port}",
+                  {"host": self.host, "port": self.port})
+        try:
+            self.app.run(host=self.host, port=self.port, threaded=True)
+        finally:
+            audit.log("AUDIT", "repository_shutdown", "success", "Repository server stopped", {})
