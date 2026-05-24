@@ -40,15 +40,15 @@ class PolicyEnforcer:
                 min_size = self.MIN_RSA_INTERMEDIATE
             else:
                 min_size = self.MIN_RSA_END_ENTITY
-            if key_size < min_size:
-                raise PolicyViolation(f"RSA key size {key_size} too small for {purpose}. Minimum: {min_size}")
         else:
             if purpose in ['root', 'intermediate']:
                 min_size = self.MIN_ECC_ROOT
             else:
                 min_size = self.MIN_ECC_END_ENTITY
-            if key_size < min_size:
-                raise PolicyViolation(f"ECC key size {key_size} too small for {purpose}. Minimum: {min_size}")
+
+        if key_size < min_size:
+            raise PolicyViolation(
+                f"{key_type.upper()} key size {key_size} too small for {purpose}. Minimum: {min_size}")
         return True
 
     def check_validity(self, validity_days: int, purpose: str) -> bool:
@@ -58,8 +58,9 @@ class PolicyEnforcer:
             max_days = self.MAX_INTERMEDIATE_VALIDITY
         else:
             max_days = self.MAX_END_ENTITY_VALIDITY
+
         if validity_days > max_days:
-            raise PolicyViolation(f"Validity {validity_days} days exceeds max {max_days} for {purpose}")
+            raise PolicyViolation(f"Validity {validity_days} days exceeds maximum {max_days} days for {purpose}")
         return True
 
     def check_san_types(self, san_entries: List[str], template: str) -> bool:
