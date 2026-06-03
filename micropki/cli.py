@@ -1144,11 +1144,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     setup_repo_serve_parser(repo_subparsers)
 
     ca_parser = subparsers.add_parser('ca', help='Certificate Authority operations')
-    ca_subparsers = ca_parser.add_subparsers(
-        dest='ca_command',
-        required=True,
-        help='CA subcommands'
-    )
+    ca_subparsers = ca_parser.add_subparsers(dest='ca_command', required=True)
 
     setup_ca_init_parser(ca_subparsers)
     setup_ca_issue_intermediate_parser(ca_subparsers)
@@ -1165,14 +1161,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     setup_ocsp_serve_parser(ocsp_subparsers)
 
     chain_parser = subparsers.add_parser('chain', help='Chain validation operations')
-    chain_subparsers = chain_parser.add_subparsers(
-        dest='chain_command',
-        required=True,
-        help='Chain subcommands'
-    )
+    chain_subparsers = chain_parser.add_subparsers(dest='chain_command', required=True)
     setup_chain_verify_parser(chain_subparsers)
 
     args = parser.parse_args(argv)
+
+    if args.config:
+        global _config
+        _config = MicroPKIConfig(args.config)
 
     if args.command == 'ca':
         if args.ca_command == 'init':
@@ -1181,41 +1177,50 @@ def main(argv: Optional[List[str]] = None) -> int:
             return cmd_ca_issue_intermediate(args)
         elif args.ca_command == 'issue-cert':
             return cmd_ca_issue_cert(args)
+        elif args.ca_command == 'list-certs':
+            return cmd_ca_list_certs(args)
+        elif args.ca_command == 'show-cert':
+            return cmd_ca_show_cert(args)
+        elif args.ca_command == 'revoke':
+            return cmd_ca_revoke(args)
+        elif args.ca_command == 'gen-crl':
+            return cmd_ca_gen_crl(args)
+        elif args.ca_command == 'check-revoked':
+            return cmd_ca_check_revoked(args)
+        elif args.ca_command == 'issue-ocsp-cert':
+            return cmd_ca_issue_ocsp_cert(args)
         else:
             print(f"Unknown CA command: {args.ca_command}", file=sys.stderr)
             return 1
+
+    elif args.command == 'ocsp':
+        if args.ocsp_command == 'serve':
+            return cmd_ocsp_serve(args)
+        else:
+            print(f"Unknown OCSP command: {args.ocsp_command}", file=sys.stderr)
+            return 1
+
     elif args.command == 'chain':
         if args.chain_command == 'verify':
             return cmd_chain_verify(args)
         else:
             print(f"Unknown chain command: {args.chain_command}", file=sys.stderr)
             return 1
+
     elif args.command == 'db':
         if args.db_command == 'init':
             return cmd_db_init(args)
+        else:
+            print(f"Unknown DB command: {args.db_command}", file=sys.stderr)
+            return 1
+
     elif args.command == 'repo':
         if args.repo_command == 'serve':
             return cmd_repo_serve(args)
-    elif args.command == 'ca':
-        if args.ca_command == 'list-certs':
-            return cmd_ca_list_certs(args)
-        elif args.ca_command == 'show-cert':
-            return cmd_ca_show_cert(args)
-    elif args.ca_command == 'revoke':
-        return cmd_ca_revoke(args)
-    elif args.ca_command == 'gen-crl':
-        return cmd_ca_gen_crl(args)
-    elif args.ca_command == 'check-revoked':
-        return cmd_ca_check_revoked(args)
-    elif args.command == 'ca':
-        if args.ca_command == 'issue-ocsp-cert':
-            return cmd_ca_issue_ocsp_cert(args)
-    elif args.command == 'ocsp':
-        if args.ocsp_command == 'serve':
-            return cmd_ocsp_serve(args)
-    elif args.config:
-        global _config
-        _config = MicroPKIConfig(args.config)
+        else:
+            print(f"Unknown repo command: {args.repo_command}", file=sys.stderr)
+            return 1
+
     else:
         print(f"Unknown command: {args.command}", file=sys.stderr)
         return 1
