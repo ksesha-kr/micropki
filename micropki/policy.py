@@ -100,3 +100,21 @@ class PolicyEnforcer:
             raise
         except Exception as e:
             raise PolicyViolation(f"CSR validation failed: {str(e)}")
+
+    def check_root_ca_params(self, key_size: int, key_type: str, validity_days: int) -> bool:
+        self.check_key_size(key_size, key_type, 'root')
+        self.check_validity(validity_days, 'root')
+        return True
+
+    def check_intermediate_ca_params(self, key_size: int, key_type: str, validity_days: int, pathlen: int) -> bool:
+        self.check_key_size(key_size, key_type, 'intermediate')
+        self.check_validity(validity_days, 'intermediate')
+        if pathlen != 0:
+            raise PolicyViolation(f"Intermediate CA pathlen must be 0, got {pathlen}")
+        return True
+
+    def check_end_entity_params(self, validity_days: int, san_entries: List[str], template: str) -> bool:
+        self.check_validity(validity_days, 'end_entity')
+        if san_entries:
+            self.check_san_types(san_entries, template)
+        return True
